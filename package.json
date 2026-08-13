@@ -1,0 +1,27 @@
+{
+  "name": "proofloop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Evidence-first AI code change verification",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/*' build && pnpm -r --filter './apps/*' build",
+    "dev": "pnpm --parallel --filter @proofloop/api --filter @proofloop/web dev",
+    "test": "pnpm -r --filter './packages/*' --filter './apps/*' test",
+    "proofloop": "node ./scripts/proofloop.mjs",
+    "demo:setup": "node ./node_modules/tsx/dist/cli.mjs scripts/setup-demo-repo.ts",
+    "demo:python": "node ./node_modules/tsx/dist/cli.mjs scripts/setup-demo-python.ts",
+    "demo": "pnpm demo:setup && node ./scripts/proofloop.mjs check --cwd ./fixtures/demo-repo --base HEAD~1 --head HEAD --no-llm --markdown",
+    "demo:story": "node ./scripts/demo-story.mjs",
+    "db:migrate": "pnpm --filter @proofloop/api db:migrate",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

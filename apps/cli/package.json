@@ -1,0 +1,30 @@
+{
+  "name": "@proofloop/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "proofloop": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "dev": "node ../../node_modules/tsx/dist/cli.mjs src/bin.ts",
+    "test": "node ./node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "lint": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@proofloop/analyzers": "workspace:*",
+    "@proofloop/core": "workspace:*",
+    "@proofloop/evidence": "workspace:*",
+    "@proofloop/llm": "workspace:*",
+    "@proofloop/security": "workspace:*",
+    "commander": "^13.1.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420" role="img" aria-labelledby="title desc">
+  <title id="title">ProofLoop demo</title>
+  <desc id="desc">bug check unknown_high_risk confirm merge=yes</desc>
+  <defs>
+    <style>
+      .bg { fill: #12161c; }
+      .chrome { fill: #1c222b; }
+      .dot { fill: #5c6b7a; }
+      .t { font-family: ui-monospace, Cascadia Code, Consolas, monospace; font-size: 14px; fill: #d7dee8; }
+      .muted { fill: #7d8b99; }
+      .ok { fill: #3dd68c; }
+      .warn { fill: #e3b341; }
+      .bad { fill: #ff7b72; }
+      .line { opacity: 0; animation: show 0.01s forwards; }
+      @keyframes show { to { opacity: 1; } }
+      .l1 { animation-delay: 0.2s; }
+      .l2 { animation-delay: 1.0s; }
+      .l3 { animation-delay: 2.0s; }
+      .l4 { animation-delay: 3.2s; }
+      .l5 { animation-delay: 4.4s; }
+      .l6 { animation-delay: 5.6s; }
+      .l7 { animation-delay: 7.0s; }
+      .l8 { animation-delay: 8.4s; }
+      .l9 { animation-delay: 9.6s; }
+      .l10 { animation-delay: 10.8s; }
+    </style>
+  </defs>
+  <rect class="bg" width="920" height="420" rx="12"/>
+  <rect class="chrome" width="920" height="36" rx="12"/>
+  <rect class="chrome" y="24" width="920" height="12"/>
+  <circle class="dot" cx="22" cy="18" r="5"/>
+  <circle class="dot" cx="42" cy="18" r="5"/>
+  <circle class="dot" cx="62" cy="18" r="5"/>
+  <text class="t muted" x="86" y="22">proofloop - 45s demo</text>
+
+  <text class="t muted line l1" x="28" y="70">$ pnpm proofloop check --cwd ./fixtures/demo-repo --base HEAD~1 --head HEAD --no-llm</text>
+  <text class="t line l2" x="28" y="100">Claims: verified / passed / verified / <tspan class="warn">unknown</tspan></text>
+  <text class="t line l3" x="28" y="130">Overall: <tspan class="bad">unknown_high_risk</tspan> | merge=<tspan class="bad">no</tspan></text>
+  <text class="t muted line l4" x="28" y="160">needs-human-review: IdP / revocation path lacks dynamic evidence</text>
+
+  <text class="t muted line l5" x="28" y="210">$ pnpm proofloop confirm &lt;runId&gt; &lt;claimId&gt; --accept --note "IdP path reviewed"</text>
+  <text class="t line l6" x="28" y="240">Claim -&gt; human accept | bound sha=&lt;head&gt; | reviewer=demo</text>
+  <text class="t line l7" x="28" y="270">Evidence kind: <tspan class="ok">manual verification</tspan> (not inferred)</text>
+  <text class="t line l8" x="28" y="300">Overall: <tspan class="ok">passed</tspan> | merge=<tspan class="ok">yes</tspan></text>
+  <text class="t muted line l9" x="28" y="340"># New commit invalidates this accept automatically (SHA-bound)</text>
+  <text class="t ok line l10" x="28" y="380">Evidence-first gate: bug -&gt; block -&gt; human confirm -&gt; merge</text>
+</svg>

@@ -1,0 +1,22 @@
+$ pnpm demo:setup
+# fixture ready (auth-boundary bug commit)
+
+$ pnpm proofloop check --cwd ./fixtures/demo-repo --base HEAD~1 --head HEAD --no-llm
+- [verified] Authentication/authorization boundaries remain correct
+- [unknown] Revoked tokens are rejected by upstream IdP integration
+- [passed] Existing unit tests still pass for touched modules
+- [verified] Typecheck/build succeeds after the change
+[building-evidence]
+Evidence: fixtures\demo-repo\.proofloop\runs\run_c9fe61fc392c684f\evidence.json
+Overall:  unknown_high_risk | merge=no
+
+$ pnpm proofloop confirm run_c9fe61fc392c684f claim_da6bc793c11c8c89 --accept --note "IdP path reviewed" --reviewer demo --cwd ./fixtures/demo-repo
+Updated fixtures\demo-repo\.proofloop\runs\run_c9fe61fc392c684f\evidence.json
+Claim claim_da6bc793c11c8c89 → human accept
+Bound: sha=7faedebf4dc0 reviewer=demo at=2026-08-13T05:21:02.429Z
+Reason: IdP path reviewed
+Overall: passed | merge=yes
+All required claims have evidence
+
+# Story complete: bug → unknown_high_risk → manual verification → merge=yes
+# Note: a new commit invalidates this accept (SHA-bound).

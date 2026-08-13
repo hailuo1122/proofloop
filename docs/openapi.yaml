@@ -1,0 +1,386 @@
+openapi: 3.0.3
+info:
+  title: ProofLoop API
+  version: 0.2.0
+  description: |
+    Evidence-first verification API.
+    When `PROOFLOOP_API_TOKEN` is set, mutating routes require `Authorization: Bearer <token>`.
+servers:
+  - url: http://localhost:8787
+security: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+        requestId: { type: string }
+    Repository:
+      type: object
+      properties:
+        id: { type: string }
+        provider: { type: string, enum: [github, gitlab, local] }
+        owner: { type: string }
+        name: { type: string }
+        defaultBranch: { type: string }
+        language: { type: string, nullable: true }
+        localPath: { type: string, nullable: true }
+    Run:
+      type: object
+      properties:
+        id: { type: string }
+        repositoryId: { type: string }
+        baseSha: { type: string }
+        headSha: { type: string }
+        status:
+          type: string
+          enum: [queued, analyzing, verifying, completed, failed, cancelled]
+        phase: { type: string, nullable: true }
+        riskLevel: { type: string }
+        overallStatus: { type: string, nullable: true }
+        totalDurationMs: { type: integer, nullable: true }
+        cancellable: { type: boolean }
+    Claim:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { type: string }
+        category: { type: string }
+        relatedFiles:
+          type: array
+          items: { type: string }
+        evidenceRefs:
+          type: array
+          items: { type: string }
+        riskWeight: { type: number }
+    Rule:
+      type: object
+      required: [key, description, ruleType, config, enabled]
+      properties:
+        key: { type: string }
+        description: { type: string }
+        ruleType:
+          type: string
+          enum: [architecture, security, testing, compatibility, command_policy]
+        config:
+          type: object
+          additionalProperties: true
+        enabled: { type: boolean }
+    ConfirmBody:
+      type: object
+      required: [decision, note]
+      properties:
+        decision: { type: string, enum: [accept, reject] }
+        note: { type: string, minLength: 1 }
+        reviewer: { type: string }
+    Envelope:
+      type: object
+      properties:
+        data: {}
+        requestId: { type: string }
+
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  auth: { type: boolean }
+                  requestId: { type: string }
+
+  /api/demo/bootstrap:
+    post:
+      summary: Register demo repository and optionally run check
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                runCheck: { type: boolean }
+                sync: { type: boolean, default: true }
+                base: { type: string }
+                head: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/repositories:
+    get:
+      summary: List repositories
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Create repository
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, owner, name]
+              properties:
+                provider: { type: string, enum: [github, gitlab, local] }
+                owner: { type: string }
+                name: { type: string }
+                localPath: { type: string }
+                defaultBranch: { type: string }
+                language: { type: string }
+      responses:
+        '200':
+          description: Created
+
+  /api/repositories/{id}/runs:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      summary: List runs
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Enqueue check (async by default)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                base: { type: string }
+                head: { type: string }
+                prBody: { type: string }
+                noLlm: { type: boolean }
+                sync: { type: boolean, description: Wait for completion when true }
+      responses:
+        '200':
+          description: Queued or completed run
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+
+  /api/repositories/{id}/history:
+    get:
+      summary: Run history and metric events
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/repositories/{id}/rules:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      summary: List rules
+      responses:
+        '200':
+          description: OK
+    put:
+      summary: Replace rules (merged into next check / proofloop.yml)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rules]
+              properties:
+                rules:
+                  type: array
+                  items: { $ref: '#/components/schemas/Rule' }
+      responses:
+        '200':
+          description: OK
+
+  /api/repositories/{id}/rules/preview:
+    post:
+      summary: Preview policy delta without saving
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rules]
+              properties:
+                rules:
+                  type: array
+                  items: { $ref: '#/components/schemas/Rule' }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}:
+    get:
+      summary: Get run (includes phase / cancellable)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/claims:
+    get:
+      summary: List claims
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/verifications:
+    get:
+      summary: List verifications
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/impact-graph:
+    get:
+      summary: Impact graph with stored edges
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/evidence-pack:
+    get:
+      summary: Evidence pack JSON
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/explain:
+    get:
+      summary: Structured facts / inferences / unknowns
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/cancel:
+    post:
+      summary: Cancel in-flight run (persisted cancel flag + AbortSignal)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /api/runs/{id}/claims/{claimId}/confirm:
+    post:
+      summary: Human confirm or reject (SHA-bound manual verification)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: claimId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmBody'
+      responses:
+        '200':
+          description: OK
+
+  /api/github/webhook:
+    post:
+      summary: GitHub webhook (PR opened/synchronize/reopened)
+      description: |
+        Uses GitHub App installation token when `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` are set,
+        otherwise `GITHUB_TOKEN`. Can clone/fetch into `PROOFLOOP_WORKSPACE_ROOT` when repo has no localPath.
+      responses:
+        '200':
+          description: Accepted
+        '401':
+          description: Invalid signature
+        '503':
+          description: Webhook secret required in production
+
+  /api/gitlab/webhook:
+    post:
+      summary: GitLab webhook (MR open/update/reopen)
+      description: |
+        Verifies `X-Gitlab-Token` against `GITLAB_WEBHOOK_SECRET`. Uses `GITLAB_TOKEN` + `GITLAB_URL`
+        for commit status, MR notes, and optional checkout into `PROOFLOOP_WORKSPACE_ROOT`.
+      responses:
+        '200':
+          description: Accepted
+        '401':
+          description: Invalid token
+        '503':
+          description: Webhook secret required in production

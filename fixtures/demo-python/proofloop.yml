@@ -1,0 +1,16 @@
+project:
+  language: python
+  packageManager: pip
+commands:
+  unit: python -m pytest -q
+policies:
+  blockOn:
+    - critical
+    - high
+  requireDynamicVerificationFor:
+    - security
+    - data
+  maxTotalDurationSeconds: 300
+  allowNetwork: false
+redaction:
+  enabled: true

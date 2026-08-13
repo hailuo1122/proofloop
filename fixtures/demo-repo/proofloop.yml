@@ -1,0 +1,27 @@
+project:
+  language: typescript
+  packageManager: npm
+commands:
+  lint: npm run lint
+  typecheck: npm run typecheck
+  unit: npm test
+  build: npm run build
+policies:
+  blockOn:
+    - critical
+    - high
+  requireDynamicVerificationFor:
+    - security
+    - data
+    - compatibility
+  maxTotalDurationSeconds: 600
+  allowNetwork: false
+context:
+  include:
+    - README.md
+  exclude:
+    - node_modules/**
+    - dist/**
+    - .env*
+redaction:
+  enabled: true

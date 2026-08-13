@@ -1,0 +1,37 @@
+{
+  "name": "@proofloop/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "dev": "node ../../node_modules/tsx/dist/cli.mjs watch src/index.ts",
+    "start": "node dist/index.js",
+    "db:migrate": "node ../../node_modules/tsx/dist/cli.mjs src/db/migrate.ts",
+    "test": "node ./node_modules/vitest/vitest.mjs run",
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "lint": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@octokit/auth-app": "^7.1.5",
+    "@octokit/rest": "^21.1.1",
+    "@proofloop/core": "workspace:*",
+    "@proofloop/evidence": "workspace:*",
+    "@proofloop/git": "workspace:*",
+    "@proofloop/llm": "workspace:*",
+    "bullmq": "^6.1.0",
+    "drizzle-orm": "^0.40.0",
+    "fastify": "^5.2.1",
+    "ioredis": "^6.0.0",
+    "pg": "^8.14.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/pg": "^8.11.11",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

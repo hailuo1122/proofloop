@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+.data
+.proofloop
+.git
+.env
+.env.local
+coverage
+*.db
+*.db-journal
+docs
+fixtures
+scripts
+tests
+*.log

@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  --pl-bg: #f5f6f8;
+  --pl-panel: #ffffff;
+  --pl-border: #d9dee7;
+  --pl-text: #1a2332;
+  --pl-muted: #5c6b7a;
+  --pl-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --pl-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--pl-sans);
+  color: var(--pl-text);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #e8eef8 0%, transparent 55%),
+    radial-gradient(900px 400px at 100% 0%, #eef3ea 0%, transparent 50%),
+    var(--pl-bg);
+}
