@@ -27,6 +27,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Build (dependencies required for typecheck)
+        run: pnpm -r --filter '@proofloop/*' build
+
       - name: Setup demo fixtures
         run: |
           pnpm demo:setup
@@ -39,7 +42,7 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Build
+      - name: Build (production)
         run: pnpm build
 
       - name: Dockerfile build (api)

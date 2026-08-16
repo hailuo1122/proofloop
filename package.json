@@ -5,7 +5,7 @@
   "description": "Evidence-first AI code change verification",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "pnpm -r --filter './packages/*' build && pnpm -r --filter './apps/*' build",
+    "build": "pnpm -r --filter '@proofloop/*' build",
     "dev": "pnpm --parallel --filter @proofloop/api --filter @proofloop/web dev",
     "test": "pnpm -r --filter '@proofloop/*' test",
     "proofloop": "node ./scripts/proofloop.mjs",
