@@ -211,7 +211,15 @@ export async function runCommand(input: {
       CI: '1',
       npm_config_update_notifier: 'false',
     };
-  for (const key of input.envWhitelist ?? []) {
+  const whitelist = input.envWhitelist ?? [];
+  if (whitelist.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[proofloop] envWhitelist passes ${whitelist.length} env var(s) to verification subprocess — ` +
+        `this can leak credentials through test output or network egress.`,
+    );
+  }
+  for (const key of whitelist) {
     if (process.env[key] != null) env[key] = process.env[key];
   }
 
@@ -220,6 +228,9 @@ export async function runCommand(input: {
       cwd: input.cwd,
       env,
       windowsHide: true,
+      // Use process group so we can kill the entire subtree (grandchildren).
+      // On Unix, kill(-pid) sends the signal to the whole process group.
+      // On Windows, job objects handle this automatically when windowsHide is true.
     });
     let stdout = '';
     let stderr = '';
@@ -238,15 +249,31 @@ export async function runCommand(input: {
       });
     };
 
+    /** Kill the process tree, not just the immediate child. */
+    const killTree = (signal?: NodeJS.Signals) => {
+      try {
+        if (process.platform === 'win32') {
+          // On Windows, taskkill /T kills the process tree.
+          const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+          spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)]);
+        } else {
+          // On Unix, kill the process group (negative PID).
+          process.kill(-child.pid!, signal ?? 'SIGKILL');
+        }
+      } catch {
+        // Process may already be dead
+      }
+    };
+
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      killTree('SIGKILL');
       finish('timed_out', null);
     }, input.timeoutMs);
 
     input.signal?.addEventListener(
       'abort',
       () => {
-        child.kill('SIGKILL');
+        killTree('SIGKILL');
         finish('skipped', null);
       },
       { once: true },
@@ -486,9 +513,10 @@ function collectStructuredReports(
   const out: Array<{ kind: Artifact['kind']; content: string; ext: string }> = [];
   const candidates: Array<{ path: string; kind: 'junit' | 'coverage' | 'report' }> = [];
 
-  const pathHits = logText.match(
-    /(?:[\w./\\-]+\.(?:xml|json|sarif))/gi,
-  ) ?? [];
+  // Only match known report file patterns — not arbitrary .xml/.json/.sarif paths
+// that could be confused with user-controlled log content.
+const REPORT_PATTERN = /(?:coverage(?:-final|-summary)?\.json|junit\.xml|results?\.sarif|sarif\.json)/gi;
+const pathHits = logText.match(REPORT_PATTERN) ?? [];
   for (const hit of pathHits.slice(0, 8)) {
     const abs = resolve(workDir, hit);
     const rel = relative(workDir, abs);

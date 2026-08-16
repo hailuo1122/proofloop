@@ -4,12 +4,13 @@ import { mapOverallToCheckConclusion } from '@proofloop/core';
 import { renderMarkdownReport, type EvidencePack } from '@proofloop/evidence';
 import { ensureGitlabCheckout, syncRepoToSha } from '@proofloop/git';
 import {
+  createOrganization,
   createRepository,
-  ensureDefaultOrganization,
   findActiveRunForHead,
   findClaimedRunForHead,
   getRepository,
   getRun,
+  listOrganizations,
   listRepositories,
   updateRepositoryLocalPath,
   updateRunGithubMeta,
@@ -270,8 +271,14 @@ export async function handleGitlabWebhook(input: {
         },
       };
     }
-    // Auto-registered GitLab repos belong to the default tenant.
-    const org = ensureDefaultOrganization();
+    // Auto-registered GitLab repos scoped to the project namespace (tenant).
+    // This mimics GitHub's installation-based org isolation.
+    const org = (() => {
+      const slug = ownerName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60) || 'default';
+      const existing = listOrganizations().find((o) => o.slug === slug);
+      if (existing) return existing;
+      return createOrganization({ name: ownerName, slug });
+    })();
     repo = createRepository({
       provider: 'gitlab',
       owner: ownerName,

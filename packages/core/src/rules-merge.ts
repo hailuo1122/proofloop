@@ -89,6 +89,11 @@ export function mergeRulesIntoConfig(
   });
 }
 
+/** Compare two arrays as sets (order-insensitive). */
+function arraySetEq(a: string[], b: string[]): boolean {
+  return a.length === b.length && [...new Set(a)].every((x) => new Set(b).has(x));
+}
+
 export function summarizeRuleImpact(base: ProofloopConfig, rules: RepoRule[]): {
   before: PolicySlice;
   after: PolicySlice;
@@ -98,13 +103,10 @@ export function summarizeRuleImpact(base: ProofloopConfig, rules: RepoRule[]): {
   const before = base.policies;
   const after = afterCfg.policies;
   const changes: string[] = [];
-  if (JSON.stringify(before.blockOn) !== JSON.stringify(after.blockOn)) {
+  if (!arraySetEq(before.blockOn, after.blockOn)) {
     changes.push(`blockOn: [${before.blockOn}] → [${after.blockOn}]`);
   }
-  if (
-    JSON.stringify(before.requireDynamicVerificationFor) !==
-    JSON.stringify(after.requireDynamicVerificationFor)
-  ) {
+  if (!arraySetEq(before.requireDynamicVerificationFor, after.requireDynamicVerificationFor)) {
     changes.push(
       `requireDynamicVerificationFor: [${before.requireDynamicVerificationFor}] → [${after.requireDynamicVerificationFor}]`,
     );

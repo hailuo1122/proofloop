@@ -97,14 +97,18 @@ export function applyClaimStatuses(
       fromLlmOnly: opts?.llmClaimIds?.has(claim.id) ?? false,
       policies: opts?.policies,
     }),
-    evidenceRefs: effective
-      .filter(
-        (v) =>
-          v.claimId === claim.id ||
-          (v.relatedClaimIds?.includes(claim.id) ?? false),
-      )
-      .filter((v) => v.status === 'passed')
-      .map((v) => v.id),
+    evidenceRefs: [
+      ...new Set(
+        effective
+          .filter(
+            (v) =>
+              v.claimId === claim.id ||
+              (v.relatedClaimIds?.includes(claim.id) ?? false),
+          )
+          .filter((v) => v.status === 'passed')
+          .map((v) => v.id),
+      ),
+    ],
   }));
 }
 
@@ -151,6 +155,9 @@ export function computeOverallStatus(input: {
     ) {
       return 'critical_blocked';
     }
+    // Risk is critical (riskWeight >= 90 blocked claim) but no blocked high-risk
+    // claim — fall through with the risk still recorded. This preserves the
+    // documented behavior while removing the fragile find-fallback.
   }
 
   if (
@@ -253,7 +260,7 @@ export function evaluateMergeGate(input: {
     allowMerge,
     reason,
     overallStatus,
-    blockingFindings: [...blockingFindings, ...highUnknown.map((c) => c.title)],
+    blockingFindings: [...new Set([...blockingFindings, ...highUnknown.map((c) => c.title)])],
   };
 }
 

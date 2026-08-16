@@ -47,27 +47,37 @@ export default function App() {
       setRepoId('');
       return;
     }
+    let cancelled = false;
     api
       .repositories(orgId)
       .then((r) => {
+        if (cancelled) return;
         setRepos(r.data);
         if (r.data[0]) setRepoId(r.data[0].id);
         else setRepoId('');
       })
       .catch((e) => setError(e.message));
+    return () => { cancelled = true; };
   }, [orgId]);
 
   useEffect(() => {
-    if (!repoId) return;
+    if (!repoId) {
+      setRuns([]);
+      setRunId('');
+      return;
+    }
+    let cancelled = false;
     api
       .runs(repoId)
       .then((r) => {
+        if (cancelled) return;
         setRuns(r.data);
         setRunId((prev) =>
           prev && r.data.some((x) => x.id === prev) ? prev : (r.data[0]?.id ?? ''),
         );
       })
       .catch((e) => setError(e.message));
+    return () => { cancelled = true; };
   }, [repoId]);
 
   useEffect(() => {
@@ -122,6 +132,8 @@ export default function App() {
     if (!repoId) return;
     setLoading(true);
     setError(null);
+    let cancelled = false;
+    const cancel = () => { cancelled = true; };
     try {
       const res = await api.createRun(repoId, {
         noLlm: true,
@@ -129,13 +141,15 @@ export default function App() {
         head: 'HEAD',
         sync: false,
       });
+      if (cancelled) return;
       setRuns((prev) => [res.data, ...prev.filter((r) => r.id !== res.data.id)]);
       setRunId(res.data.id);
       navigate(`/runs/${res.data.id}`);
       let current = res.data;
       for (let i = 0; i < 180; i++) {
-        if (['completed', 'failed', 'cancelled'].includes(current.status)) break;
+        if (cancelled || ['completed', 'failed', 'cancelled'].includes(current.status)) break;
         await new Promise((r) => setTimeout(r, 500));
+        if (cancelled) return;
         current = (await api.run(current.id)).data;
         setRuns((prev) => [current, ...prev.filter((r) => r.id !== current.id)]);
       }
@@ -143,9 +157,9 @@ export default function App() {
         new CustomEvent('proofloop:run-updated', { detail: { runId: current.id } }),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!cancelled) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     }
   }
 

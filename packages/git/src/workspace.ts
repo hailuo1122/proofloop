@@ -77,6 +77,10 @@ export async function syncRepoToSha(
 
 /** Clone or fetch a repository into a durable workspace and check out headSha. */
 export async function ensureGithubCheckout(input: EnsureCheckoutInput): Promise<string> {
+  // Prevent path traversal via owner/name containing ../../etc.
+  if (/[/\\]/.test(input.owner) || /[/\\]/.test(input.name)) {
+    throw new Error(`invalid_owner_or_name: owner and name must not contain path separators`);
+  }
   const root = resolve(input.workspaceRoot);
   const dir = join(root, input.owner, input.name);
   const lock = checkoutLockPath(root, input.owner, input.name);

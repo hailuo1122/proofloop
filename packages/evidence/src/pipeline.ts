@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -75,11 +76,24 @@ export interface PipelineResult {
   reportPath: string;
 }
 
-function loadConfig(cwd: string): ProofloopConfig {
-  const path = join(cwd, 'proofloop.yml');
-  if (!existsSync(path)) return parseProofloopConfig({});
-  const raw = parseYaml(readFileSync(path, 'utf8'));
-  return parseProofloopConfig(raw);
+/**
+ * Load proofloop.yml from the BASE SHA's git tree, NEVER from the working tree.
+ * This prevents a PR from controlling verification commands or merge-gate policies
+ * through its own changes to proofloop.yml.
+ * Falls back to defaults when the file does not exist in the base commit.
+ */
+function loadConfigFromBase(cwd: string, baseSha: string): ProofloopConfig {
+  try {
+    const stdout = execFileSync('git', ['show', `${baseSha}:proofloop.yml`], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 128 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return parseProofloopConfig(parseYaml(stdout));
+  } catch {
+    return parseProofloopConfig({});
+  }
 }
 
 export async function runCheckPipeline(opts: PipelineOptions): Promise<PipelineResult> {
@@ -97,7 +111,10 @@ export async function runCheckPipeline(opts: PipelineOptions): Promise<PipelineR
   const baseSha = await getSha(opts.cwd, baseRef);
   const headSha = await getSha(opts.cwd, headRef);
   const diff = await analyzeDiff(opts.cwd, baseSha, headSha);
-  const fileConfig = loadConfig(opts.cwd);
+  // Load policies and commands from the BASE SHA, not the working tree HEAD.
+  // This is the critical security boundary: the PR's own proofloop.yml must not
+  // control verification commands or merge-gate policies.
+  const fileConfig = loadConfigFromBase(opts.cwd, baseSha);
   const config = mergeRulesIntoConfig(fileConfig, opts.repositoryRules);
   const detection = detectProject(opts.cwd);
   const ruleLabels = (opts.repositoryRules ?? [])
@@ -216,16 +233,21 @@ export async function runCheckPipeline(opts: PipelineOptions): Promise<PipelineR
         claims = [...anchors, ...mapped.slice(0, MAX_LLM_CLAIMS)];
         llmUsed = true;
       }
-    } catch {
-      // keep deterministic claims; never write unvalidated LLM text
+    } catch (llmErr) {
+      // LLM claims failed — surface a visible warning in the evidence pack
+      // so the user knows the AI analysis was not available.
+      const llmMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
+      const isSchemaError = llmMsg.includes('llm_schema_error');
       findings.push({
         id: createId('finding'),
         runId,
-        severity: 'info',
-        title: 'llm_schema_error',
-        description: 'LLM claims output failed schema validation; using deterministic claims',
+        severity: 'warning',
+        title: isSchemaError ? 'llm_schema_error' : 'llm_failed',
+        description: isSchemaError
+          ? 'LLM claims output failed schema validation; using deterministic claims only.'
+          : `LLM claims generation failed: ${llmMsg.slice(0, 200)}. Falling back to deterministic claims.`,
         evidenceRefs: [],
-        remediation: 'Retry with a stricter model or continue without LLM',
+        remediation: 'Check LLM configuration and model availability, or retry without LLM.',
         blocking: false,
         source: 'llm',
       });

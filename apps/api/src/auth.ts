@@ -76,10 +76,10 @@ export async function requireApiToken(req: FastifyRequest, _reply: FastifyReply)
   const path = (req.url ?? '').split('?')[0] ?? '';
   if (PUBLIC_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) return;
 
-  // Fail closed in production: mutating control plane must not be open.
+  // Fail closed in production: EVERY request must be authenticated.
   if (keys.length === 0) {
     const env = process.env.NODE_ENV ?? 'development';
-    if (env === 'production' && req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+    if (env === 'production') {
       throw new ProofloopError(
         'unauthorized',
         'PROOFLOOP_API_TOKEN (or PROOFLOOP_API_KEYS) must be set in production',

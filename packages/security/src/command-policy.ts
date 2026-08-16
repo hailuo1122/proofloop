@@ -30,7 +30,7 @@ const DENY_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bmigrate\s+(up|apply|deploy)\b/i, reason: 'DB migrate deploy is blocked' },
   { pattern: />\s*\/dev\/sd/i, reason: 'Disk device writes are blocked' },
   // Shell chaining / substitution — never allow via prefix matching
-  { pattern: /[;&|`$]/, reason: 'Shell metacharacters are blocked' },
+  { pattern: /[;&|`$%^]/, reason: 'Shell metacharacters are blocked' },
   { pattern: /\n|\r/, reason: 'Multiline commands are blocked' },
   { pattern: />\s*[^\s]/, reason: 'Output redirection is blocked' },
   { pattern: /<\s*[^\s]/, reason: 'Input redirection is blocked' },
@@ -70,9 +70,11 @@ const ALLOW_PREFIXES = [
   'poetry run mypy',
 ];
 
-/** Normalize whitespace so tabs/multi-space cannot bypass exact/prefix checks. */
+/** Normalize whitespace so tabs/multi-space cannot bypass exact/prefix checks.
+ *  Also applies Unicode NFKC normalization to prevent homoglyph bypasses
+ *  (e.g. full-width r and m to bypass the `rm` deny pattern). */
 function normalizeCommand(command: string): string {
-  return command.trim().replace(/\s+/g, ' ');
+  return command.trim().normalize('NFKC').replace(/\s+/g, ' ');
 }
 
 export function evaluateCommand(
