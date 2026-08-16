@@ -27,8 +27,8 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build (dependencies required for typecheck)
-        run: pnpm -r --filter '@proofloop/*' build
+      - name: Build dependencies
+        run: pnpm --filter @proofloop/core build && pnpm --filter @proofloop/git build && pnpm --filter @proofloop/security build && pnpm --filter @proofloop/llm build && pnpm --filter @proofloop/analyzers build && pnpm --filter @proofloop/verifiers build && pnpm --filter @proofloop/evidence build
 
       - name: Setup demo fixtures
         run: |
@@ -37,13 +37,13 @@ jobs:
         shell: bash
 
       - name: Typecheck
-        run: pnpm typecheck
+        run: pnpm -r typecheck
 
       - name: Test
-        run: pnpm test
+        run: pnpm --filter @proofloop/* test
 
-      - name: Build (production)
-        run: pnpm build
+      - name: Build (full)
+        run: pnpm --filter @proofloop/* build
 
       - name: Dockerfile build (api)
         if: matrix.os == 'ubuntu-latest'
