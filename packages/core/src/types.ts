@@ -60,7 +60,7 @@ export const VerificationStatusSchema = z.enum([
 ]);
 export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
 
-export const FindingSeveritySchema = z.enum(['info', 'low', 'medium', 'high', 'critical']);
+export const FindingSeveritySchema = z.enum(['info', 'warning', 'low', 'medium', 'high', 'critical']);
 export type FindingSeverity = z.infer<typeof FindingSeveritySchema>;
 
 export const FindingSourceSchema = z.enum(['static', 'dynamic', 'llm', 'policy']);

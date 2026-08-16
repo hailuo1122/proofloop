@@ -43,7 +43,32 @@ export const ProofloopConfigSchema = z.object({
 export type ProofloopConfig = z.infer<typeof ProofloopConfigSchema>;
 
 export function parseProofloopConfig(raw: unknown): ProofloopConfig {
-  return ProofloopConfigSchema.parse(raw ?? {});
+  // Normalize empty blockOn to the default so explicit blockOn: [] doesn't
+  // accidentally unblock merge (see riskBlockedByPolicy).
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const p = (raw as Record<string, unknown>).policies;
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      const b = (p as Record<string, unknown>).blockOn;
+      if (Array.isArray(b) && b.length === 0) {
+        (p as Record<string, unknown>).blockOn = ['critical', 'high'];
+      }
+    }
+  }
+
+  const result = ProofloopConfigSchema.safeParse(raw ?? {});
+  if (!result.success) {
+    throw result.error;
+  }
+  // Warn about unknown keys that will be silently dropped.
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const knownKeys = new Set(Object.keys(ProofloopConfigSchema.shape));
+    for (const key of Object.keys(raw)) {
+      if (!knownKeys.has(key)) {
+        console.warn(`[proofloop] Unknown config key "${key}" will be ignored. Check spelling.`);
+      }
+    }
+  }
+  return result.data;
 }
 
 export const DEFAULT_PROOFLOOP_YML = `project:

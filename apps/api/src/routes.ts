@@ -206,6 +206,16 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!Number.isInteger(installationId) || installationId <= 0) {
       throw new ProofloopError('bad_request', 'Invalid installation id', 400);
     }
+    // Restrict to global-scoped keys: org-scoped keys must not mint or refresh
+    // installation tokens that may belong to other tenants.
+    const scope = scopeForRequest(req as never);
+    if (scope.organizationId) {
+      throw new ProofloopError(
+        'forbidden',
+        'Only global API keys may mint installation tokens',
+        403,
+      );
+    }
     const token = await getInstallationToken(installationId);
     if (!token) {
       throw new ProofloopError(
@@ -349,6 +359,24 @@ export async function registerRoutes(app: FastifyInstance) {
     const scope = scopeForRequest(req as never);
     // Org-bound keys cannot create repositories in another org.
     const organizationId = scope.organizationId ?? body.organizationId ?? null;
+
+    // Confine localPath to the workspace root so an authenticated caller cannot
+    // point the pipeline at arbitrary server directories (CVE-like).
+    if (body.localPath) {
+      const workspaceRoot = resolve(
+        process.env.PROOFLOOP_WORKSPACE_ROOT ?? resolve(process.cwd(), '.data', 'workspaces'),
+      );
+      const resolved = resolve(body.localPath);
+      if (!resolved.startsWith(workspaceRoot + '/') && !resolved.startsWith(workspaceRoot + '\\')) {
+        throw new ProofloopError(
+          'bad_request',
+          'localPath must be within PROOFLOOP_WORKSPACE_ROOT',
+          400,
+        );
+      }
+      body.localPath = resolved;
+    }
+
     const data = createRepository({ ...body, organizationId });
     return { data, requestId: rid(req as { requestId?: string }) };
   });

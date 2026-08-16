@@ -38,7 +38,12 @@ export function claimRequiresDynamic(claim: Claim, policies?: PolicySlice): bool
 /** Whether an unresolved risk at this level should block merge. */
 export function riskBlockedByPolicy(riskLevel: RiskLevel, policies?: PolicySlice): boolean {
   const blockOn = policies?.blockOn ?? ['critical', 'high'];
-  if (blockOn.length === 0) return false;
+  // Empty blockOn array is treated as the default ['critical', 'high'] to prevent
+  // accidental unblocking of merge when the user sets blockOn: [].
+  if (blockOn.length === 0) {
+    const threshold = RISK_RANK.high; // minimum of ['critical', 'high']
+    return RISK_RANK[riskLevel] >= threshold;
+  }
   const threshold = Math.min(...blockOn.map((b) => RISK_RANK[b as RiskLevel] ?? 99));
   return RISK_RANK[riskLevel] >= threshold;
 }

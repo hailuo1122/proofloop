@@ -156,40 +156,50 @@ export function buildEvidencePack(input: {
   return EvidencePackSchema.parse(pack);
 }
 
+/** Escape HTML entities in a string to prevent XSS in Markdown/HTML rendering. */
+function esc(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 export function renderMarkdownReport(pack: EvidencePack): string {
   const lines: string[] = [];
   lines.push(`# ProofLoop Evidence Report`);
   lines.push('');
-  lines.push(`- Run: \`${pack.run.id}\``);
-  lines.push(`- Repository: \`${pack.run.repository}\``);
-  lines.push(`- Base/Head: \`${pack.run.baseSha.slice(0, 8)}\` → \`${pack.run.headSha.slice(0, 8)}\``);
-  lines.push(`- Overall: **${pack.run.overallStatus}** (risk: ${pack.run.riskLevel})`);
+  lines.push(`- Run: \`${esc(pack.run.id)}\``);
+  lines.push(`- Repository: \`${esc(pack.run.repository)}\``);
+  lines.push(`- Base/Head: \`${esc(pack.run.baseSha.slice(0, 8))}\` → \`${esc(pack.run.headSha.slice(0, 8))}\``);
+  lines.push(`- Overall: **${esc(pack.run.overallStatus)}** (risk: ${esc(pack.run.riskLevel)})`);
   lines.push(
-    `- Merge gate: ${pack.mergeGate?.allowMerge ? 'ALLOW' : 'BLOCK'} — ${pack.mergeGate?.reason ?? ''}`,
+    `- Merge gate: ${pack.mergeGate?.allowMerge ? 'ALLOW' : 'BLOCK'} — ${esc(pack.mergeGate?.reason ?? '')}`,
   );
   lines.push('');
   lines.push(`## Intent`);
-  lines.push(pack.intent.summary);
+  lines.push(esc(pack.intent.summary));
   lines.push('');
   lines.push(`## Claims`);
   for (const c of pack.claims) {
-    lines.push(`### ${c.title}`);
-    lines.push(`- Status: \`${c.status}\``);
-    lines.push(`- Source: ${c.source}`);
-    lines.push(`- Files: ${c.relatedFiles.map((f) => `\`${f}\``).join(', ') || '(none)'}`);
-    lines.push(`- Evidence: ${c.evidenceRefs.join(', ') || '(none)'}`);
+    lines.push(`### ${esc(c.title)}`);
+    lines.push(`- Status: \`${esc(c.status)}\``);
+    lines.push(`- Source: ${esc(c.source)}`);
+    lines.push(`- Files: ${c.relatedFiles.map((f) => `\`${esc(f)}\``).join(', ') || '(none)'}`);
+    lines.push(`- Evidence: ${c.evidenceRefs.map(esc).join(', ') || '(none)'}`);
     lines.push('');
   }
   lines.push(`## Verifications`);
   for (const v of pack.verifications as Array<Record<string, unknown>>) {
     lines.push(
-      `- \`${v.id}\` ${v.type}: \`${v.command}\` → **${v.status}** (exit ${v.exitCode ?? 'n/a'}, ${v.durationMs ?? 0}ms)`,
+      `- \`${esc(String(v.id))}\` ${esc(String(v.type))}: \`${esc(String(v.command))}\` → **${esc(String(v.status))}** (exit ${String(v.exitCode ?? 'n/a')}, ${String(v.durationMs ?? 0)}ms)`,
     );
   }
   lines.push('');
   lines.push(`## Unknowns`);
   for (const u of pack.unknowns as Array<Record<string, unknown>>) {
-    lines.push(`- **${u.title}**: ${u.reason}`);
+    lines.push(`- **${esc(String(u.title))}**: ${esc(String(u.reason))}`);
   }
   lines.push('');
   const reviews = (pack.humanReviews ?? []) as Array<Record<string, unknown>>;
@@ -197,13 +207,13 @@ export function renderMarkdownReport(pack: EvidencePack): string {
     lines.push(`## Human reviews (SHA-bound)`);
     for (const r of reviews) {
       lines.push(
-        `- \`${r.claimId}\` ${r.decision} by ${r.reviewer} @ \`${String(r.headSha).slice(0, 12)}\` [${r.status}]${r.note ? ` — ${r.note}` : ''}`,
+        `- \`${esc(String(r.claimId))}\` ${esc(String(r.decision))} by ${esc(String(r.reviewer))} @ \`${esc(String(r.headSha).slice(0, 12))}\` [${esc(String(r.status))}]${r.note ? ` — ${esc(String(r.note))}` : ''}`,
       );
     }
     lines.push('');
   }
   lines.push(`## Limitations`);
-  for (const l of pack.limitations) lines.push(`- ${l}`);
+  for (const l of pack.limitations) lines.push(`- ${esc(l)}`);
   lines.push('');
   return lines.join('\n');
 }

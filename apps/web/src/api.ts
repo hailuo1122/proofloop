@@ -2,9 +2,35 @@ const BASE = '';
 
 function authHeaders(): Record<string, string> {
   const token =
-    (import.meta as { env?: Record<string, string> }).env?.VITE_PROOFLOOP_API_TOKEN ||
+    (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('PROOFLOOP_API_TOKEN') : null) ||
     (typeof localStorage !== 'undefined' ? localStorage.getItem('PROOFLOOP_API_TOKEN') : null);
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Allow the UI to set the token from a login dialog. */
+export function setApiToken(token: string) {
+  try {
+    sessionStorage.setItem('PROOFLOOP_API_TOKEN', token);
+  } catch {
+    // sessionStorage may not be available (SSR, privacy mode)
+  }
+}
+
+export function clearApiToken() {
+  try {
+    sessionStorage.removeItem('PROOFLOOP_API_TOKEN');
+    localStorage.removeItem('PROOFLOOP_API_TOKEN');
+  } catch {
+    // ignore
+  }
+}
+
+export function getApiToken(): string | null {
+  try {
+    return sessionStorage.getItem('PROOFLOOP_API_TOKEN') ?? localStorage.getItem('PROOFLOOP_API_TOKEN');
+  } catch {
+    return null;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

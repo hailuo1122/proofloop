@@ -54,13 +54,35 @@ function resolveCallEdge(root: string, expr: Expression): TsCallEdge | null {
     const name = resolved.getName() || expr.getText();
     const declarations = resolved.getDeclarations();
     if (!declarations.length) return null;
+
+    // Prefer the actual definition (function/variable/class) over re-exports.
+    // When a symbol is declared in one file and re-exported from another,
+    // getDeclarations() returns both; we must pick the defining file, not the
+    // barrel, so call edges are attributed to the correct file.
+    let best: string | null = null;
     for (const decl of declarations) {
       const abs = decl.getSourceFile().getFilePath();
       const rel = relative(resolve(root), abs);
-      if (!rel.startsWith('..') && !isAbsolute(rel)) {
-        return { symbol: name, targetFile: toPosix(rel) };
+      if (rel.startsWith('..') || isAbsolute(rel)) continue;
+
+      // If this declaration is a non-export wrapper (ExportSpecifier, ExportAssignment),
+      // keep looking for the real definition.
+      const parentKind = decl.getParent()?.getKind();
+      if (
+        parentKind === SyntaxKind.ExportSpecifier ||
+        parentKind === SyntaxKind.ExportAssignment
+      ) {
+        if (!best) best = toPosix(rel); // remember as fallback
+        continue;
       }
+
+      // Found a real definition — prefer this file.
+      return { symbol: name, targetFile: toPosix(rel) };
     }
+
+    // Fallback: use the first repo-internal declaration (barrel) if no real definition found.
+    if (best) return { symbol: name, targetFile: best };
+
     // Declared outside the repo (node_modules types / globals) — external call.
     return { symbol: name, targetFile: null };
   } catch {
