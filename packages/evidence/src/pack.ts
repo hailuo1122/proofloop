@@ -7,6 +7,7 @@ import {
   type ChangeIntent,
   type Claim,
   type ImpactNode,
+  type NextAction,
   type PolicySlice,
   type RiskFinding,
   type UnknownItem,
@@ -15,24 +16,98 @@ import {
 import { EvidencePackSchema, type EvidencePack } from './schema.js';
 
 export function buildUnknowns(claims: Claim[], policies?: PolicySlice): UnknownItem[] {
+  const mode = policies?.mode ?? 'blocking';
   return claims
     .filter((c) => c.status === 'unknown' || c.status === 'inferred' || c.status === 'blocked')
-    .map((c) => ({
-      id: `unknown_${c.id}`,
-      claimId: c.id,
-      title: c.title,
-      reason:
-        c.status === 'blocked'
-          ? 'Verification failed or was blocked by policy'
-          : 'No sufficient executed verification linked to this claim',
-      suggestedVerification: isHighRiskClaim(c, policies)
-        ? 'Run focused unit/integration tests covering auth/data edge cases (or record manual confirmation)'
-        : 'Run unit tests or typecheck linked to the related files',
-      importance: isHighRiskClaim(c, policies)
-        ? 'High-risk unknown blocks merge until dynamic evidence exists'
-        : 'Low-risk unknown produces a warning only',
-      riskLevel: isHighRiskClaim(c, policies) ? 'high' : 'low',
-    }));
+    .map((c) => {
+      const high = isHighRiskClaim(c, policies);
+      return {
+        id: `unknown_${c.id}`,
+        claimId: c.id,
+        title: c.title,
+        reason:
+          c.status === 'blocked'
+            ? 'Verification failed or was blocked by policy'
+            : 'No sufficient executed verification linked to this claim',
+        suggestedVerification: high
+          ? 'Run focused unit/integration tests covering auth/data edge cases (or record manual confirmation)'
+          : 'Run unit tests or typecheck linked to the related files',
+        importance: high
+          ? mode === 'advisory'
+            ? 'High-risk unknown (advisory: merge allowed; blocking mode would gate)'
+            : 'High-risk unknown blocks merge until dynamic evidence exists'
+          : 'Low-risk unknown produces a warning only',
+        riskLevel: high ? 'high' : 'low',
+      };
+    });
+}
+
+/** Actionable follow-ups so advisory/blocked runs are useful, not just a red light. */
+export function buildNextActions(input: {
+  runId: string;
+  claims: Claim[];
+  unknowns: UnknownItem[];
+  gate: { allowMerge: boolean; mode?: string; advisoryWouldBlock?: boolean };
+  policies?: PolicySlice;
+}): NextAction[] {
+  const actions: NextAction[] = [];
+  const mode = input.policies?.mode ?? input.gate.mode ?? 'blocking';
+
+  for (const u of input.unknowns) {
+    if (!u.claimId) continue;
+    const high = u.riskLevel === 'high' || u.riskLevel === 'critical';
+    if (!high && mode === 'blocking' && input.gate.allowMerge) continue;
+
+    actions.push({
+      id: `confirm_${u.claimId}`,
+      kind: 'confirm',
+      title: `Confirm or reject: ${u.title}`,
+      detail: high
+        ? 'SHA-bound human review clears high-risk unknown for this commit only'
+        : 'Optional manual review for this warning-level claim',
+      command: `pnpm proofloop confirm ${input.runId} ${u.claimId} --accept --note "Reviewed" --reviewer you`,
+      claimId: u.claimId,
+    });
+  }
+
+  const needsDynamic = input.claims.some(
+    (c) =>
+      isHighRiskClaim(c, input.policies) &&
+      (c.status === 'unknown' || c.status === 'inferred'),
+  );
+  if (needsDynamic) {
+    actions.push({
+      id: 'verify_dynamic',
+      kind: 'verify',
+      title: 'Add or run dynamic verification',
+      detail:
+        'Link unit/integration/security commands in proofloop.yml so high-risk claims can become verified',
+      command: 'pnpm proofloop check --base main --head HEAD --no-llm',
+    });
+  }
+
+  if (mode === 'advisory' && input.gate.advisoryWouldBlock) {
+    actions.push({
+      id: 'graduate_blocking',
+      kind: 'graduate',
+      title: 'Graduate to blocking mode',
+      detail:
+        'This run would block under policies.mode: blocking. Flip mode when ready to enforce the merge gate.',
+      command: '# in proofloop.yml → policies.mode: blocking',
+    });
+  }
+
+  if (!actions.length && !input.gate.allowMerge) {
+    actions.push({
+      id: 'explain',
+      kind: 'configure',
+      title: 'Inspect why merge is blocked',
+      detail: 'Explain separates facts, inferences, and unknowns for this run',
+      command: `pnpm proofloop explain ${input.runId}`,
+    });
+  }
+
+  return actions;
 }
 
 export function buildEvidencePack(input: {
@@ -82,6 +157,13 @@ export function buildEvidencePack(input: {
   });
   const riskLevel = computeRiskLevel(claims, findings, policies);
   const unknowns = buildUnknowns(claims, policies);
+  const nextActions = buildNextActions({
+    runId: input.runId,
+    claims,
+    unknowns,
+    gate,
+    policies,
+  });
 
   const pack: EvidencePack = {
     schemaVersion: '1.0',
@@ -135,7 +217,7 @@ export function buildEvidencePack(input: {
       storagePath: a.storagePath,
     })),
     limitations: input.limitations ?? [
-      '未执行生产环境验证',
+      'Production-environment verification was not executed',
       'Impact graph is partial and must not be treated as complete',
       input.llmUsed
         ? 'LLM outputs are schema-validated inferences, not facts'
@@ -143,6 +225,7 @@ export function buildEvidencePack(input: {
     ],
     policies: policies
       ? {
+          mode: policies.mode,
           blockOn: policies.blockOn,
           requireDynamicVerificationFor: policies.requireDynamicVerificationFor,
           maxTotalDurationSeconds: policies.maxTotalDurationSeconds,
@@ -150,6 +233,7 @@ export function buildEvidencePack(input: {
         }
       : undefined,
     humanReviews: [],
+    nextActions,
     mergeGate: gate,
   };
 
@@ -177,6 +261,13 @@ export function renderMarkdownReport(pack: EvidencePack): string {
   lines.push(
     `- Merge gate: ${pack.mergeGate?.allowMerge ? 'ALLOW' : 'BLOCK'} — ${esc(pack.mergeGate?.reason ?? '')}`,
   );
+  if (pack.mergeGate?.mode) {
+    lines.push(
+      `- Mode: \`${esc(pack.mergeGate.mode)}\`${
+        pack.mergeGate.advisoryWouldBlock ? ' (would block under blocking)' : ''
+      }`,
+    );
+  }
   lines.push('');
   lines.push(`## Intent`);
   lines.push(esc(pack.intent.summary));
@@ -184,8 +275,9 @@ export function renderMarkdownReport(pack: EvidencePack): string {
   lines.push(`## Claims`);
   for (const c of pack.claims) {
     lines.push(`### ${esc(c.title)}`);
-    lines.push(`- Status: \`${esc(c.status)}\``);
+    lines.push(`- Status: \`${esc(c.status)}\` · Category: ${esc(c.category ?? 'functional')} · Risk weight: ${String(c.riskWeight ?? 'n/a')}`);
     lines.push(`- Source: ${esc(c.source)}`);
+    if (c.description) lines.push(`- Description: ${esc(c.description)}`);
     lines.push(`- Files: ${c.relatedFiles.map((f) => `\`${esc(f)}\``).join(', ') || '(none)'}`);
     lines.push(`- Evidence: ${c.evidenceRefs.map(esc).join(', ') || '(none)'}`);
     lines.push('');
@@ -195,13 +287,32 @@ export function renderMarkdownReport(pack: EvidencePack): string {
     lines.push(
       `- \`${esc(String(v.id))}\` ${esc(String(v.type))}: \`${esc(String(v.command))}\` → **${esc(String(v.status))}** (exit ${String(v.exitCode ?? 'n/a')}, ${String(v.durationMs ?? 0)}ms)`,
     );
+    if (v.resultSummary) {
+      lines.push(`  - Summary: ${esc(String(v.resultSummary))}`);
+    }
+    const related = (v.relatedClaimIds as string[] | undefined) ?? [];
+    if (related.length) {
+      lines.push(`  - Linked claims: ${related.map((id) => `\`${esc(id)}\``).join(', ')}`);
+    }
   }
   lines.push('');
   lines.push(`## Unknowns`);
   for (const u of pack.unknowns as Array<Record<string, unknown>>) {
     lines.push(`- **${esc(String(u.title))}**: ${esc(String(u.reason))}`);
+    if (u.suggestedVerification) {
+      lines.push(`  - Suggested: ${esc(String(u.suggestedVerification))}`);
+    }
   }
   lines.push('');
+  const nextActions = (pack.nextActions ?? []) as Array<Record<string, unknown>>;
+  if (nextActions.length) {
+    lines.push(`## Next actions`);
+    for (const a of nextActions) {
+      lines.push(`- **${esc(String(a.title))}** (${esc(String(a.kind))}): ${esc(String(a.detail))}`);
+      if (a.command) lines.push(`  - \`${esc(String(a.command))}\``);
+    }
+    lines.push('');
+  }
   const reviews = (pack.humanReviews ?? []) as Array<Record<string, unknown>>;
   if (reviews.length) {
     lines.push(`## Human reviews (SHA-bound)`);

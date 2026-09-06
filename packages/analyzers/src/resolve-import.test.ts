@@ -82,4 +82,33 @@ describe('resolveImportPath (real TypeScript resolution)', () => {
     expect(resolveImportPath(root, 'src/index.ts', './token')).toBe('src/token.ts');
     expect(resolveImportPath(root, 'src/index.ts', './missing')).toBeNull();
   });
+
+  it('uses the nearest per-package tsconfig in a monorepo (no root config)', () => {
+    const root = join(tmpdir(), `pl-resolve-mono-${Date.now()}`);
+    dirs.push(root);
+    // Monorepo layout: no tsconfig.json at the root, per-package configs with
+    // their own paths aliases. The root-only lookup used to miss these.
+    mkdirSync(join(root, 'packages', 'core', 'src', 'lib'), { recursive: true });
+    mkdirSync(join(root, 'apps', 'web', 'src'), { recursive: true });
+    writeFileSync(
+      join(root, 'packages', 'core', 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: '.',
+          paths: { '@core/*': ['src/*'] },
+          moduleResolution: 'bundler',
+        },
+      }),
+    );
+    writeFileSync(
+      join(root, 'packages', 'core', 'src', 'lib', 'machine.ts'),
+      'export const machine = 1;\n',
+    );
+    writeFileSync(join(root, 'apps', 'web', 'src', 'main.ts'), 'export {};\n');
+    expect(resolveImportPath(root, 'packages/core/src/index.ts', '@core/lib/machine')).toBe(
+      'packages/core/src/lib/machine.ts',
+    );
+    // Files outside the package must not resolve through its alias.
+    expect(resolveImportPath(root, 'apps/web/src/main.ts', '@core/lib/machine')).toBeNull();
+  });
 });

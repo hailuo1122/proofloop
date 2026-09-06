@@ -312,9 +312,25 @@ export interface UnknownItem {
   riskLevel: RiskLevel;
 }
 
+export type NextActionKind = 'confirm' | 'verify' | 'configure' | 'graduate';
+
+/** Concrete follow-ups so a blocked/advisory run is actionable, not just a red light. */
+export interface NextAction {
+  id: string;
+  kind: NextActionKind;
+  title: string;
+  detail: string;
+  command?: string;
+  claimId?: string;
+}
+
 export interface MergeGate {
   allowMerge: boolean;
   reason: string;
   overallStatus: OverallStatus;
   blockingFindings: string[];
+  /** Effective gate mode for this evaluation. */
+  mode?: 'advisory' | 'blocking';
+  /** True when merge is allowed only because mode=advisory (would block under blocking). */
+  advisoryWouldBlock?: boolean;
 }

@@ -40,6 +40,7 @@ const CLAIM_CATS = [
  * - blockOn / requireDynamicVerificationFor: union (never remove baseline entries)
  * - allowNetwork: may only disable if baseline allowed it
  * - maxTotalDurationSeconds: may only shorten
+ * - mode: may only move advisory → blocking (never loosen)
  */
 export function mergeRulesIntoConfig(
   base: ProofloopConfig,
@@ -48,6 +49,7 @@ export function mergeRulesIntoConfig(
   const enabled = (rules ?? []).filter((r) => r.enabled);
   if (!enabled.length) return base;
 
+  let mode = base.policies.mode;
   let blockOn = [...base.policies.blockOn] as Risk[];
   let requireDynamic = [...base.policies.requireDynamicVerificationFor];
   let allowNetwork = base.policies.allowNetwork;
@@ -56,6 +58,9 @@ export function mergeRulesIntoConfig(
 
   for (const rule of enabled) {
     const cfg = rule.config ?? {};
+    if (cfg.mode === 'blocking') {
+      mode = 'blocking';
+    }
     if (Array.isArray(cfg.blockOn)) {
       blockOn = strengthenBlockOn(blockOn, asRiskList(cfg.blockOn));
     }
@@ -81,6 +86,7 @@ export function mergeRulesIntoConfig(
     ...base,
     commands,
     policies: {
+      mode,
       blockOn,
       requireDynamicVerificationFor: requireDynamic,
       allowNetwork,
@@ -118,6 +124,9 @@ export function summarizeRuleImpact(base: ProofloopConfig, rules: RepoRule[]): {
     changes.push(
       `maxTotalDurationSeconds: ${before.maxTotalDurationSeconds} → ${after.maxTotalDurationSeconds}`,
     );
+  }
+  if (before.mode !== after.mode) {
+    changes.push(`mode: ${before.mode} → ${after.mode}`);
   }
   if (!changes.length) changes.push('No policy delta vs proofloop.yml defaults');
   return { before, after, changes };

@@ -355,6 +355,16 @@ export function findClaimedRunForHead(
 }
 
 /**
+ * Drop the durable head→run claim so an explicit re-run request (e.g. GitHub
+ * `check_suite` `rerequested`) can enqueue a fresh run for the same head.
+ */
+export function releaseHeadClaim(repositoryId: string, headSha: string): void {
+  getDb()
+    .prepare(`DELETE FROM head_run_claims WHERE repository_id = ? AND head_sha = ?`)
+    .run(repositoryId, headSha);
+}
+
+/**
  * Atomically claim (repositoryId, headSha) → runId.
  * Returns existing claimed/active run when the head was already processed.
  */
@@ -373,13 +383,8 @@ export function claimOrGetHeadRun(input: {
     if (existing) return { run: existing, created: false };
 
     const startedAt = new Date().toISOString();
-    getDb()
-      .prepare(
-        `INSERT INTO head_run_claims (repository_id, head_sha, run_id, created_at)
-         VALUES (?, ?, ?, ?)`,
-      )
-      .run(input.repositoryId, input.headSha, input.id, startedAt);
-
+    // change_runs is inserted BEFORE its head_run_claims row: the claim table
+    // carries a foreign key to change_runs.
     getDb()
       .prepare(
         `INSERT INTO change_runs
@@ -398,6 +403,12 @@ export function claimOrGetHeadRun(input: {
       );
     getDb()
       .prepare(
+        `INSERT INTO head_run_claims (repository_id, head_sha, run_id, created_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(input.repositoryId, input.headSha, input.id, startedAt);
+    getDb()
+      .prepare(
         `INSERT INTO metric_events (id, repository_id, run_id, event_type, metadata_json, created_at)
          VALUES (?, ?, ?, 'check_started', ?, ?)`,
       )
@@ -410,140 +421,6 @@ export function claimOrGetHeadRun(input: {
       );
     return { run: getRun(input.id)!, created: true };
   });
-}
-
-export function persistPack(input: {
-  repositoryId: string;
-  source: string;
-  pack: EvidencePack;
-  evidencePath: string;
-  prNumber?: number;
-}): RunRow | undefined {
-  const db = getDb();
-  const runId = input.pack.run.id;
-  db.prepare(
-    `INSERT INTO change_runs
-    (id, repository_id, base_sha, head_sha, source, status, risk_level, overall_status,
-     started_at, finished_at, total_duration_ms, error_code, evidence_path, pr_number, check_run_id, comment_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    runId,
-    input.repositoryId,
-    input.pack.run.baseSha,
-    input.pack.run.headSha,
-    input.source,
-    'completed',
-    input.pack.run.riskLevel,
-    input.pack.run.overallStatus,
-    input.pack.run.startedAt ?? null,
-    input.pack.run.finishedAt ?? null,
-    input.pack.run.totalDurationMs ?? null,
-    null,
-    input.evidencePath,
-    input.prNumber ?? null,
-    null,
-    null,
-  );
-
-  db.prepare(
-    `INSERT INTO change_intents
-    (id, run_id, summary, source_text, confidence, assumptions_json, generated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    createId('intent'),
-    runId,
-    input.pack.intent.summary,
-    input.pack.intent.sourceRefs.join('\n'),
-    String(input.pack.intent.confidence ?? 'low'),
-    JSON.stringify(input.pack.intent.assumptions),
-    new Date().toISOString(),
-  );
-
-  const insertClaim = db.prepare(
-    `INSERT INTO claims
-    (id, run_id, title, description, category, source, status, confidence, risk_weight,
-     related_files_json, related_symbols_json, evidence_refs_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  for (const c of input.pack.claims) {
-    insertClaim.run(
-      c.id,
-      runId,
-      c.title,
-      c.description ?? '',
-      c.category ?? 'functional',
-      c.source,
-      c.status,
-      c.confidence ?? 'low',
-      c.riskWeight ?? 0,
-      JSON.stringify(c.relatedFiles),
-      JSON.stringify(c.relatedSymbols ?? []),
-      JSON.stringify(c.evidenceRefs),
-    );
-  }
-
-  const insertVerification = db.prepare(
-    `INSERT INTO verifications
-    (id, claim_id, run_id, type, command, safe_command, status, exit_code, started_at, finished_at,
-     duration_ms, environment_fingerprint, log_artifact_id, result_summary, related_claim_ids_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  for (const v of input.pack.verifications as Array<Record<string, unknown>>) {
-    insertVerification.run(
-      String(v.id),
-      (v.claimId as string | null) ?? null,
-      runId,
-      String(v.type),
-      String(v.command),
-      v.safeCommand ? 1 : 0,
-      String(v.status),
-      (v.exitCode as number | null) ?? null,
-      (v.startedAt as string | null) ?? null,
-      (v.finishedAt as string | null) ?? null,
-      (v.durationMs as number | null) ?? null,
-      (v.environmentFingerprint as string | null) ?? null,
-      (v.logArtifactId as string | null) ?? null,
-      String(v.resultSummary ?? ''),
-      JSON.stringify(v.relatedClaimIds ?? []),
-    );
-  }
-
-  const insertNode = db.prepare(
-    `INSERT INTO impact_nodes
-    (id, run_id, node_type, label, path, relation, risk_level, source, confidence)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  for (const n of (input.pack.impactGraph.nodes ?? []) as Array<Record<string, unknown>>) {
-    insertNode.run(
-      String(n.id),
-      runId,
-      String(n.nodeType),
-      String(n.label),
-      (n.path as string | null) ?? null,
-      String(n.relation),
-      String(n.riskLevel),
-      (n.source as string | null) ?? null,
-      (n.confidence as string | null) ?? null,
-    );
-  }
-  insertImpactEdges(runId, input.pack);
-
-  db.prepare(
-    `INSERT INTO metric_events (id, repository_id, run_id, event_type, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    createId('metric'),
-    input.repositoryId,
-    runId,
-    'check_finished',
-    JSON.stringify({
-      overallStatus: input.pack.run.overallStatus,
-      headSha: input.pack.run.headSha,
-    }),
-    new Date().toISOString(),
-  );
-
-  return getRun(runId);
 }
 
 export function listClaims(runId: string) {
@@ -702,35 +579,37 @@ export function createQueuedRun(input: {
   prNumber?: number | null;
 }): RunRow {
   const startedAt = new Date().toISOString();
-  getDb()
-    .prepare(
-      `INSERT INTO change_runs
-      (id, repository_id, base_sha, head_sha, source, status, risk_level, overall_status,
-       started_at, finished_at, total_duration_ms, error_code, evidence_path, pr_number, check_run_id, comment_id, phase)
-      VALUES (?, ?, ?, ?, ?, 'queued', 'low', null, ?, null, null, null, null, ?, null, null, 'queued')`,
-    )
-    .run(
-      input.id,
-      input.repositoryId,
-      input.baseSha,
-      input.headSha,
-      input.source,
-      startedAt,
-      input.prNumber ?? null,
-    );
-  getDb()
-    .prepare(
-      `INSERT INTO metric_events (id, repository_id, run_id, event_type, metadata_json, created_at)
-       VALUES (?, ?, ?, 'check_started', ?, ?)`,
-    )
-    .run(
-      createId('metric'),
-      input.repositoryId,
-      input.id,
-      JSON.stringify({ headSha: input.headSha }),
-      startedAt,
-    );
-  return getRun(input.id)!;
+  return withTransaction(() => {
+    getDb()
+      .prepare(
+        `INSERT INTO change_runs
+        (id, repository_id, base_sha, head_sha, source, status, risk_level, overall_status,
+         started_at, finished_at, total_duration_ms, error_code, evidence_path, pr_number, check_run_id, comment_id, phase)
+        VALUES (?, ?, ?, ?, ?, 'queued', 'low', null, ?, null, null, null, null, ?, null, null, 'queued')`,
+      )
+      .run(
+        input.id,
+        input.repositoryId,
+        input.baseSha,
+        input.headSha,
+        input.source,
+        startedAt,
+        input.prNumber ?? null,
+      );
+    getDb()
+      .prepare(
+        `INSERT INTO metric_events (id, repository_id, run_id, event_type, metadata_json, created_at)
+         VALUES (?, ?, ?, 'check_started', ?, ?)`,
+      )
+      .run(
+        createId('metric'),
+        input.repositoryId,
+        input.id,
+        JSON.stringify({ headSha: input.headSha }),
+        startedAt,
+      );
+    return getRun(input.id)!;
+  });
 }
 
 export function updateRunProgress(

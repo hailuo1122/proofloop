@@ -17,10 +17,36 @@ import {
 
 const QUEUE_NAME = 'proofloop-checks';
 const redisUrl = process.env.REDIS_URL?.trim() || '';
+/** Cap on concurrent in-memory pipelines (mirrors the BullMQ worker concurrency). */
+const MEMORY_CONCURRENCY = Number(process.env.PROOFLOOP_QUEUE_CONCURRENCY ?? 2);
 
 let bullQueue: Queue<CheckJobPayload> | null = null;
 let bullWorker: Worker<CheckJobPayload> | null = null;
 let redisEnabled: boolean | null = null;
+
+// Simple semaphore: API-sourced runs bypass head claiming, so without a cap
+// every POST /repositories/:id/runs would spawn an unbounded concurrent
+// pipeline in the API process.
+const memorySlots = { active: 0, waiters: [] as Array<() => void> };
+
+function acquireSlot(): Promise<void> {
+  if (memorySlots.active < MEMORY_CONCURRENCY) {
+    memorySlots.active += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    memorySlots.waiters.push(() => {
+      memorySlots.active += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  const next = memorySlots.waiters.shift();
+  if (next) next();
+  else memorySlots.active = Math.max(0, memorySlots.active - 1);
+}
 
 function useRedis(): boolean {
   if (redisEnabled !== null) return redisEnabled;
@@ -161,8 +187,16 @@ export async function enqueueRepositoryCheck(input: {
     gitlabMeta: input.gitlabMeta,
   };
 
-  const work = () =>
-    withMemoryLock(`repo:${input.repositoryId}:${input.localPath}`, () => processCheckJob(payload));
+  const work = async () => {
+    await withMemoryLock(`repo:${input.repositoryId}:${input.localPath}`, async () => {
+      await acquireSlot();
+      try {
+        await processCheckJob(payload);
+      } finally {
+        releaseSlot();
+      }
+    });
+  };
 
   if (input.sync) {
     await work();

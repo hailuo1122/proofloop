@@ -1,6 +1,7 @@
 import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import { randomUUID } from 'node:crypto';
+import { ZodError } from 'zod';
 import { toErrorBody, ProofloopError } from '@proofloop/core';
 import { cleanupStaleWorkspaces } from '@proofloop/git';
 import { registerRoutes } from './routes.js';
@@ -60,17 +61,22 @@ export async function buildApp() {
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
     const raw = String(body ?? '');
     (req as RawBodyRequest).rawBody = raw;
+    // Empty bodies are tolerated: route handlers treat `body ?? {}` as optional
+    // input, and several POSTs (e.g. cancel) legitimately carry no payload.
     if (raw.trim().length === 0) {
-      done(new ProofloopError('bad_request', 'Empty JSON body', 400), undefined);
+      done(null, {});
       return;
     }
     try {
       const parsed = JSON.parse(raw);
+      // Only reject OWN prototype-pollution keys. (`'__proto__' in parsed` is
+      // always true for plain objects via the prototype chain and would 400
+      // every valid POST body — smoke-tested and caught.)
       if (
         parsed &&
         typeof parsed === 'object' &&
         !Array.isArray(parsed) &&
-        ('__proto__' in parsed || 'constructor' in parsed)
+        (Object.hasOwn(parsed, '__proto__') || Object.hasOwn(parsed, 'constructor'))
       ) {
         done(new ProofloopError('bad_request', 'Unsafe JSON keys rejected', 400), undefined);
         return;
@@ -110,10 +116,30 @@ export async function buildApp() {
 
   app.setErrorHandler((err, req, reply) => {
     const requestId = (req as typeof req & { requestId?: string }).requestId ?? 'unknown';
+    // Validation failures are client errors, not server faults.
+    if (err instanceof ZodError) {
+      reply.status(400).send({
+        error: {
+          code: 'invalid_body',
+          message: err.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '),
+        },
+        requestId,
+      });
+      return;
+    }
     const status =
       err instanceof ProofloopError
         ? err.statusCode
         : (err as { statusCode?: number }).statusCode ?? 500;
+    if (status >= 500 && !(err instanceof ProofloopError)) {
+      // Don't leak internal exception text (stack paths, SQL details) to clients.
+      req.log.error({ err, requestId }, 'unhandled route error');
+      reply.status(status).send({
+        error: { code: 'internal_error', message: 'Internal server error' },
+        requestId,
+      });
+      return;
+    }
     reply.status(status).send(toErrorBody(err, requestId));
   });
 

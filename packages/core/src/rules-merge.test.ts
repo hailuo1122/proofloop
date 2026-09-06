@@ -87,4 +87,33 @@ describe('mergeRulesIntoConfig', () => {
     expect(changes.some((c) => c.includes('allowNetwork'))).toBe(true);
     expect(changes.some((c) => c.includes('blockOn'))).toBe(true);
   });
+
+  it('may tighten mode advisory → blocking but never the reverse', () => {
+    const base = parseProofloopConfig({
+      policies: { mode: 'advisory' },
+    });
+    expect(base.policies.mode).toBe('advisory');
+    const tightened = mergeRulesIntoConfig(base, [
+      {
+        key: 'enforce',
+        description: 'graduate',
+        ruleType: 'security',
+        enabled: true,
+        config: { mode: 'blocking' },
+      },
+    ]);
+    expect(tightened.policies.mode).toBe('blocking');
+
+    const blockingBase = parseProofloopConfig({ policies: { mode: 'blocking' } });
+    const notLoosened = mergeRulesIntoConfig(blockingBase, [
+      {
+        key: 'loosen',
+        description: 'try advisory',
+        ruleType: 'security',
+        enabled: true,
+        config: { mode: 'advisory' },
+      },
+    ]);
+    expect(notLoosened.policies.mode).toBe('blocking');
+  });
 });

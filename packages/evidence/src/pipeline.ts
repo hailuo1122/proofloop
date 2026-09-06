@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
   createId,
@@ -14,7 +14,7 @@ import {
   type RepoRule,
   type RiskFinding,
 } from '@proofloop/core';
-import { analyzeDiff, getSha } from '@proofloop/git';
+import { analyzeDiff, getSha, listFiles } from '@proofloop/git';
 import {
   analyzePythonFilesAsync,
   analyzeTypeScriptFiles,
@@ -135,8 +135,6 @@ export async function runCheckPipeline(opts: PipelineOptions): Promise<PipelineR
   let extraTs: string[] = [];
   let extraPy: string[] = [];
   try {
-    const { listFiles } = await import('@proofloop/git');
-    const { dirname } = await import('node:path');
     const all = await listFiles(opts.cwd, headSha);
     const seedDirs = new Set(
       [...tsFiles, ...pyFiles].map((p) => dirname(p).replace(/\\/g, '/')),

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -228,9 +228,10 @@ export async function runCommand(input: {
       cwd: input.cwd,
       env,
       windowsHide: true,
-      // Use process group so we can kill the entire subtree (grandchildren).
-      // On Unix, kill(-pid) sends the signal to the whole process group.
-      // On Windows, job objects handle this automatically when windowsHide is true.
+      // POSIX only: put the child in its own process group so kill(-pid) reaches
+      // the entire subtree (shell + grandchildren). Without `detached`, the child
+      // stays in our group and kill(-pid) fails with ESRCH, orphaning timeouts.
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     let stderr = '';
@@ -254,11 +255,17 @@ export async function runCommand(input: {
       try {
         if (process.platform === 'win32') {
           // On Windows, taskkill /T kills the process tree.
-          const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
-          spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)]);
-        } else {
+          if (child.pid != null) {
+            spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true });
+          }
+        } else if (child.pid != null) {
           // On Unix, kill the process group (negative PID).
-          process.kill(-child.pid!, signal ?? 'SIGKILL');
+          try {
+            process.kill(-child.pid, signal ?? 'SIGKILL');
+          } catch {
+            // Group may already be gone; still signal the child directly.
+            child.kill(signal ?? 'SIGKILL');
+          }
         }
       } catch {
         // Process may already be dead
@@ -279,11 +286,13 @@ export async function runCommand(input: {
       { once: true },
     );
 
+    // Stop accumulating past the cap so a chatty hung command cannot balloon
+    // memory until the timeout fires.
     child.stdout.on('data', (d) => {
-      stdout += d.toString();
+      if (stdout.length < max) stdout += d.toString();
     });
     child.stderr.on('data', (d) => {
-      stderr += d.toString();
+      if (stderr.length < max) stderr += d.toString();
     });
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -295,6 +304,79 @@ export async function runCommand(input: {
       finish(code === 0 ? 'passed' : 'failed', code);
     });
   });
+}
+
+const LINK_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.proofloop',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+]);
+
+/**
+ * Link the repo's real node_modules trees into a fresh worktree: the root, plus
+ * node_modules of every workspace package found up to two levels deep (covers
+ * `packages/*` and `apps/*` layouts). Returns the list of links created, in
+ * creation order, so cleanup can detach exactly what was attached.
+ */
+function linkDependencyTrees(sourceRoot: string, destRoot: string): string[] {
+  const created: string[] = [];
+  const link = (src: string, dest: string): boolean => {
+    if (!existsSync(src) || existsSync(dest)) return false;
+    try {
+      symlinkSync(src, dest, process.platform === 'win32' ? 'junction' : 'dir');
+      created.push(dest);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  link(join(sourceRoot, 'node_modules'), join(destRoot, 'node_modules'));
+  let firstLevel: string[] = [];
+  try {
+    firstLevel = readdirSync(sourceRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !LINK_SKIP_DIRS.has(e.name) && !e.name.startsWith('.'))
+      .map((e) => e.name);
+  } catch {
+    return created;
+  }
+  for (const name of firstLevel.slice(0, 60)) {
+    const sub = join(sourceRoot, name);
+    link(join(sub, 'node_modules'), join(destRoot, name, 'node_modules'));
+    try {
+      const nested = readdirSync(sub, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && !LINK_SKIP_DIRS.has(e.name) && !e.name.startsWith('.'))
+        .map((e) => e.name);
+      for (const child of nested.slice(0, 60)) {
+        link(
+          join(sub, child, 'node_modules'),
+          join(destRoot, name, child, 'node_modules'),
+        );
+      }
+    } catch {
+      // ignore unreadable directories
+    }
+  }
+  return created;
+}
+
+/** True when at least one `packages/*`-style workspace package has node_modules. */
+function hasWorkspaceChildDeps(root: string): boolean {
+  for (const dir of ['packages', 'apps', 'libs', 'services']) {
+    const base = join(root, dir);
+    if (!existsSync(base)) continue;
+    try {
+      for (const name of readdirSync(base)) {
+        if (existsSync(join(base, name, 'node_modules'))) return true;
+      }
+    } catch {
+      // ignore unreadable directories
+    }
+  }
+  return false;
 }
 
 export async function runVerifications(input: {
@@ -314,6 +396,9 @@ export async function runVerifications(input: {
   const repoRoot = resolve(input.repoRoot);
   let workDir = repoRoot;
   let worktreePath: string | null = null;
+  // Junctions/symlinks we created inside the worktree (root + workspace
+  // packages). Cleanup detaches exactly these before any recursive delete.
+  const junctions: string[] = [];
   // Prefer an isolated worktree of headSha so evidence is SHA-bound. On Windows,
   // junctions for node_modules are detached before recursive cleanup.
   const wantWorktree = input.useWorktree !== false;
@@ -324,19 +409,22 @@ export async function runVerifications(input: {
       // Do not pre-create the path — `git worktree add` requires it absent.
       await createWorktree(repoRoot, worktreePath, input.headSha);
       workDir = worktreePath;
-      const rootNm = join(repoRoot, 'node_modules');
-      const wtNm = join(worktreePath, 'node_modules');
-      if (existsSync(rootNm) && !existsSync(wtNm)) {
-        try {
-          symlinkSync(rootNm, wtNm, process.platform === 'win32' ? 'junction' : 'dir');
-        } catch {
-          workDir = repoRoot;
-        }
-      }
-      const depsOk =
+      // A fresh worktree has no node_modules at all. Link the repo's real
+      // dependency directories in: the root, plus every workspace package's
+      // node_modules (pnpm/npm/yarn workspaces keep per-package trees that a
+      // bare root link cannot satisfy). Each created link is recorded so the
+      // cleanup path can detach exactly what it attached.
+      junctions.push(...linkDependencyTrees(repoRoot, worktreePath));
+      const rootDepsOk =
         existsSync(join(workDir, 'node_modules', 'typescript')) ||
         existsSync(join(workDir, 'node_modules', 'vitest')) ||
         existsSync(join(workDir, 'node_modules', '.bin'));
+      const isMonorepo =
+        existsSync(join(workDir, 'pnpm-workspace.yaml')) ||
+        existsSync(join(workDir, 'lerna.json')) ||
+        existsSync(join(workDir, 'rush.json'));
+      const depsOk =
+        rootDepsOk && (!isMonorepo || hasWorkspaceChildDeps(workDir));
       if (!depsOk) {
         workDir = repoRoot;
       }
@@ -401,6 +489,10 @@ export async function runVerifications(input: {
         cwd: workDir,
         timeoutMs: input.timeoutMsPerCommand,
         signal: input.signal,
+        // Pass the same policy inputs the pre-check used — otherwise runCommand
+        // re-evaluates against defaults and blocks yml-declared commands here.
+        declaredSafeCommands: input.declaredSafeCommands,
+        allowNetwork: input.allowNetwork,
       });
 
       const finishedAt = new Date().toISOString();
@@ -467,27 +559,33 @@ export async function runVerifications(input: {
     }
   } finally {
     if (worktreePath) {
-      // Detach the dependency junction BEFORE removing the worktree: recursive
-      // deletion through a live junction can wipe the real node_modules. If the
-      // first unlink fails (file in use), `git worktree remove` may leave the
-      // junction behind, so retry the detach before deciding the shell is safe
-      // to remove. If it is still attached, leave the (empty-ish) shell rather
-      // than risk deleting the real dependencies.
-      const linkedNm = join(worktreePath, 'node_modules');
-      const detach = (): boolean => {
-        try {
-          if (!existsSync(linkedNm)) return true;
-          const st = lstatSync(linkedNm);
-          if (!st.isSymbolicLink() && !st.isDirectory()) return false;
-          unlinkSync(linkedNm);
-          return !existsSync(linkedNm);
-        } catch {
-          return false;
+      // Detach every dependency junction BEFORE removing the worktree: recursive
+      // deletion through a live junction can wipe the real node_modules. If an
+      // unlink fails (file in use), `git worktree remove` may leave the junction
+      // behind, so retry before deciding the shell is safe to remove. If any
+      // junction is still attached, leave the (empty-ish) shell rather than risk
+      // deleting the real dependencies.
+      const detachAll = (): boolean => {
+        let allDetached = true;
+        for (const linked of junctions) {
+          try {
+            if (!existsSync(linked)) continue;
+            const st = lstatSync(linked);
+            if (!st.isSymbolicLink() && !st.isDirectory()) {
+              allDetached = false;
+              continue;
+            }
+            unlinkSync(linked);
+            if (existsSync(linked)) allDetached = false;
+          } catch {
+            allDetached = false;
+          }
         }
+        return allDetached;
       };
-      detach();
+      detachAll();
       await removeWorktree(repoRoot, worktreePath);
-      const clean = detach();
+      const clean = detachAll();
       try {
         if (clean && existsSync(worktreePath)) {
           rmSync(worktreePath, { recursive: true, force: true });
@@ -514,9 +612,9 @@ function collectStructuredReports(
   const candidates: Array<{ path: string; kind: 'junit' | 'coverage' | 'report' }> = [];
 
   // Only match known report file patterns — not arbitrary .xml/.json/.sarif paths
-// that could be confused with user-controlled log content.
-const REPORT_PATTERN = /(?:coverage(?:-final|-summary)?\.json|junit\.xml|results?\.sarif|sarif\.json)/gi;
-const pathHits = logText.match(REPORT_PATTERN) ?? [];
+  // that could be confused with user-controlled log content.
+  const REPORT_PATTERN = /(?:coverage(?:-final|-summary)?\.json|junit\.xml|results?\.sarif|sarif\.json)/gi;
+  const pathHits = logText.match(REPORT_PATTERN) ?? [];
   for (const hit of pathHits.slice(0, 8)) {
     const abs = resolve(workDir, hit);
     const rel = relative(workDir, abs);

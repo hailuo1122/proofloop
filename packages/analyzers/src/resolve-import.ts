@@ -27,16 +27,15 @@ const DEFAULT_OPTIONS: ts.CompilerOptions = {
 type CachedEntry = { mtimeMs: number; options: ts.CompilerOptions };
 const optionsCache = new Map<string, CachedEntry>();
 
-function compilerOptionsFor(root: string): ts.CompilerOptions {
-  const tsconfig = join(root, 'tsconfig.json');
-  const currentMtime = existsSync(tsconfig) ? statSync(tsconfig).mtimeMs : 0;
-  const cached = optionsCache.get(root);
+function loadCompilerOptions(tsconfigPath: string): ts.CompilerOptions {
+  const currentMtime = existsSync(tsconfigPath) ? statSync(tsconfigPath).mtimeMs : 0;
+  const cached = optionsCache.get(tsconfigPath);
   if (cached && cached.mtimeMs === currentMtime) return cached.options;
   let options = DEFAULT_OPTIONS;
-  if (existsSync(tsconfig)) {
+  if (existsSync(tsconfigPath)) {
     try {
       const parsed = ts.getParsedCommandLineOfConfigFile(
-        tsconfig,
+        tsconfigPath,
         {},
         {
           ...ts.sys,
@@ -46,13 +45,33 @@ function compilerOptionsFor(root: string): ts.CompilerOptions {
       );
       if (parsed && parsed.options) options = parsed.options;
     } catch {
-      // fall back to defaults
+      console.warn(
+        `[proofloop] Failed to parse ${tsconfigPath}; falling back to default module resolution options.`,
+      );
     }
   }
-  // Cache per-root, invalidated on tsconfig.json mtime change so long-lived
-  // API workers pick up config edits without restarting.
-  optionsCache.set(root, { mtimeMs: currentMtime, options });
+  // Cache per tsconfig path, invalidated on mtime change so long-lived API
+  // workers pick up config edits without restarting.
+  optionsCache.set(tsconfigPath, { mtimeMs: currentMtime, options });
   return options;
+}
+
+/**
+ * Find the nearest tsconfig.json at or above `fromDir`, stopping at the repo
+ * root. Monorepos keep per-package tsconfigs; using the nearest one preserves
+ * package-level `paths`/`baseUrl` that a root-only lookup would silently lose.
+ */
+function findNearestTsconfig(fromDir: string, repoRoot: string): string | null {
+  let dir = fromDir;
+  const stop = resolve(repoRoot);
+  for (;;) {
+    const candidate = join(dir, 'tsconfig.json');
+    if (existsSync(candidate)) return candidate;
+    if (resolve(dir) === stop) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 const EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', ''];
@@ -109,8 +128,12 @@ export function resolveImportPath(
 ): string | null {
   if (!specifier || typeof specifier !== 'string') return null;
 
-  const options = compilerOptionsFor(repoRoot);
+  // Prefer the nearest tsconfig.json to the importing file (monorepos keep
+  // per-package configs); fall back to the repo root config, then defaults.
   const containingFile = resolve(repoRoot, fromFile);
+  const tsconfig =
+    findNearestTsconfig(dirname(containingFile), repoRoot) ?? join(repoRoot, 'tsconfig.json');
+  const options = loadCompilerOptions(tsconfig);
   try {
     const result = ts.resolveModuleName(
       specifier,

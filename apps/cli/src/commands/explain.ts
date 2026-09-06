@@ -16,7 +16,9 @@ export async function explainCommand(
     const pack = EvidencePackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
     console.log(`# Explain ${runId}`);
     console.log(
-      `Overall: ${pack.run.overallStatus} | merge=${pack.mergeGate?.allowMerge ? 'yes' : 'no'}`,
+      `Overall: ${pack.run.overallStatus} | merge=${pack.mergeGate?.allowMerge ? 'yes' : 'no'}${
+        pack.mergeGate?.mode ? ` | mode=${pack.mergeGate.mode}` : ''
+      }`,
     );
     console.log(`Head: ${pack.run.headSha}`);
     console.log(`Gate: ${pack.mergeGate?.reason ?? ''}`);
@@ -79,6 +81,14 @@ export async function explainCommand(
         console.log(
           `- ${r.decision} ${r.claimId} by ${r.reviewer} @ ${r.headSha.slice(0, 12)} [${r.status}]${r.note ? ` — ${r.note}` : ''}`,
         );
+      }
+    }
+    const next = pack.nextActions ?? [];
+    if (next.length) {
+      console.log('\n## Next actions');
+      for (const a of next) {
+        console.log(`- [${a.kind}] ${a.title}: ${a.detail}`);
+        if (a.command) console.log(`  ${a.command}`);
       }
     }
     return pack.mergeGate?.allowMerge ? 0 : 1;

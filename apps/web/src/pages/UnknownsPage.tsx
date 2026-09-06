@@ -12,6 +12,12 @@ export function UnknownsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState('');
+  const [reviewer, setReviewer] = useState(
+    () =>
+      (typeof localStorage !== 'undefined'
+        ? localStorage.getItem('PROOFLOOP_REVIEWER')
+        : null) ?? 'dashboard-reviewer',
+  );
   const [lastReject, setLastReject] = useState<{
     claimId: string;
     reason: string;
@@ -39,12 +45,22 @@ export function UnknownsPage() {
       setError('Review note is required for the audit trail.');
       return;
     }
+    if (!reviewer.trim()) {
+      setError('Reviewer name is required for the audit trail.');
+      return;
+    }
     setBusy(claimId);
     setError(null);
     try {
+      try {
+        localStorage.setItem('PROOFLOOP_REVIEWER', reviewer.trim());
+      } catch {
+        // ignore storage failures
+      }
       const res = await api.confirmClaim(runId, claimId, {
         decision,
         note: note.trim(),
+        reviewer: reviewer.trim(),
       });
       await reload();
       if (decision === 'reject') {
@@ -146,6 +162,15 @@ export function UnknownsPage() {
           </p>
         </section>
       ) : null}
+      <label className="block text-sm">
+        <span className="text-xs uppercase text-[var(--pl-muted)]">Reviewer (required for audit)</span>
+        <input
+          className="mt-1 w-full rounded border border-[var(--pl-border)] bg-white px-2 py-1.5"
+          value={reviewer}
+          onChange={(e) => setReviewer(e.target.value)}
+          placeholder="Who is accepting or rejecting this claim"
+        />
+      </label>
       <label className="block text-sm">
         <span className="text-xs uppercase text-[var(--pl-muted)]">Review note (required for audit)</span>
         <input

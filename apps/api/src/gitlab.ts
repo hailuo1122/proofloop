@@ -16,6 +16,7 @@ import {
   updateRunGithubMeta,
 } from './store.js';
 import { enqueueRepositoryCheck } from './queue.js';
+import { webhooksTotal } from './metrics.js';
 
 function tokensEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -50,17 +51,26 @@ async function gitlabFetch(
 }
 
 function summaryMarkdown(pack: EvidencePack, evidenceUrl: string): string {
-  return [
+  const lines = [
     `### ProofLoop`,
     ``,
     `- Overall: \`${pack.run.overallStatus}\``,
     `- Risk: \`${pack.run.riskLevel}\``,
     `- Merge: ${pack.mergeGate?.allowMerge ? 'allowed' : 'blocked'}`,
+    `- Mode: \`${pack.mergeGate?.mode ?? pack.policies?.mode ?? 'blocking'}\``,
     `- Claims: ${pack.claims.length}, Unknowns: ${pack.unknowns.length}`,
     `- Evidence: ${evidenceUrl}`,
     ``,
     pack.mergeGate?.reason ?? '',
-  ].join('\n');
+  ];
+  const next = pack.nextActions ?? [];
+  if (next.length) {
+    lines.push('', '**Next actions**');
+    for (const a of next.slice(0, 5)) {
+      lines.push(`- ${a.title}${a.command ? `: \`${a.command}\`` : ''}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 export async function publishGitlabStatus(input: {
@@ -78,6 +88,10 @@ export async function publishGitlabStatus(input: {
   const evidenceUrl = `${publicBase}/api/runs/${input.runId}/evidence-pack`;
   const conclusion = mapOverallToCheckConclusion(
     input.pack.run.overallStatus as Parameters<typeof mapOverallToCheckConclusion>[0],
+    {
+      allowMerge: input.pack.mergeGate?.allowMerge,
+      mode: input.pack.mergeGate?.mode ?? input.pack.policies?.mode,
+    },
   );
   const state =
     conclusion === 'success' ? 'success' : conclusion === 'neutral' ? 'success' : 'failed';
@@ -134,6 +148,47 @@ export async function publishGitlabStatus(input: {
   }
 
   return { noteId };
+}
+
+/** Report a crashed pipeline as a failed commit status — a failed run must never be silent. */
+export async function publishGitlabFailure(input: {
+  projectId: number | string;
+  headSha: string;
+  mrIid?: number | null;
+  runId: string;
+  message: string;
+}): Promise<void> {
+  if (!gitlabToken()) return;
+  const publicBase = process.env.PUBLIC_BASE_URL ?? 'http://localhost:8787';
+  const evidenceUrl = `${publicBase}/api/runs/${input.runId}/evidence-pack`;
+  await gitlabFetch(
+    `/projects/${encodeURIComponent(String(input.projectId))}/statuses/${input.headSha}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        state: 'failed',
+        name: 'ProofLoop',
+        description: 'ProofLoop: pipeline error',
+        target_url: evidenceUrl,
+      }),
+    },
+  ).catch(() => undefined);
+  if (input.mrIid) {
+    const marker = '<!-- proofloop-summary -->';
+    const noteBody = [
+      `${marker}`,
+      `### ProofLoop`,
+      ``,
+      `- Overall: \`error\``,
+      `- The verification pipeline failed before producing evidence.`,
+      `- \`${input.message.slice(0, 300)}\``,
+      `- Evidence: ${evidenceUrl}`,
+    ].join('\n');
+    await gitlabFetch(
+      `/projects/${encodeURIComponent(String(input.projectId))}/merge_requests/${input.mrIid}/notes`,
+      { method: 'POST', body: JSON.stringify({ body: noteBody }) },
+    ).catch(() => undefined);
+  }
 }
 
 export async function republishGitlabAfterConfirm(
@@ -215,6 +270,7 @@ export async function handleGitlabWebhook(input: {
   if (!event || (event !== 'Merge Request Hook' && event !== 'merge_request')) {
     return { status: 200, body: { ignored: true, event: event || 'missing' } };
   }
+  webhooksTotal.inc({ provider: 'gitlab', event });
 
   const payload = input.body as {
     object_kind?: string;
@@ -350,7 +406,6 @@ export async function handleGitlabWebhook(input: {
       runId: run.id,
       status: run.status,
       overallStatus: run.overallStatus ?? undefined,
-      workspace: localPath,
       evidenceUrl: `${process.env.PUBLIC_BASE_URL ?? 'http://localhost:8787'}/api/runs/${run.id}/evidence-pack`,
     },
   };

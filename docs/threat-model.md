@@ -22,8 +22,9 @@
 | Arbitrary command execution | Allowlist + explicit `proofloop.yml` declarations; denylist for rm/sudo/terraform/kubectl/git push/migrations/curl |
 | Secret leakage in logs/UI | Redaction of tokens/passwords/cookies/Authorization/private keys; API never returns raw unredacted secrets |
 | Prompt injection / fabricated evidence | LLM outputs Zod-validated; cannot mark `verified`; facts vs inferences separated |
-| Webhook spoofing | Optional `GITHUB_WEBHOOK_SECRET` HMAC verification |
-| Silent mutation of user tree | Default worktree isolation; no auto-commit/merge/push |
+| Webhook spoofing | HMAC verification over exact raw bytes (`X-Hub-Signature-256`) with timing-safe compare; `GITHUB_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET` are **required** — unsigned deliveries are rejected with 503 |
+| Silent mutation of user tree | Default `git worktree` isolation of the checked-out SHA; no auto-commit/merge/push |
+| Cross-tenant access via `localPath` | `localPath` confined to `PROOFLOOP_WORKSPACE_ROOT`; org-scoped API keys may only register checkouts inside their own `{root}/{org-slug}/` subtree |
 | SSRF via verify commands | `allowNetwork: false` by default; curl/wget blocked |
 | Path traversal in artifacts | Artifacts written under run-scoped storage paths |
 

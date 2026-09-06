@@ -4,10 +4,13 @@ info:
   version: 0.2.0
   description: |
     Evidence-first verification API.
-    When `PROOFLOOP_API_TOKEN` is set, mutating routes require `Authorization: Bearer <token>`.
+    When `PROOFLOOP_API_TOKEN` is set, ALL non-public routes (GETs included) require
+    `Authorization: Bearer <token>`. In production the API refuses to boot without
+    auth credentials. Webhook endpoints are exempt (they enforce HMAC/shared secrets).
 servers:
   - url: http://localhost:8787
-security: []
+security:
+  - bearerAuth: []
 components:
   securitySchemes:
     bearerAuth:
@@ -77,7 +80,7 @@ components:
         enabled: { type: boolean }
     ConfirmBody:
       type: object
-      required: [decision, note]
+      required: [decision, note, reviewer]
       properties:
         decision: { type: string, enum: [accept, reject] }
         note: { type: string, minLength: 1 }
@@ -356,6 +359,109 @@ paths:
       responses:
         '200':
           description: OK
+
+  /api/organizations:
+    get:
+      summary: List organizations (tenants)
+      responses:
+        '200':
+          description: Organization list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+    post:
+      summary: Create an organization (admin-scope keys only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+      responses:
+        '200':
+          description: Created organization
+        '403':
+          description: Org-scoped keys cannot create organizations
+
+  /api/organizations/{id}/repositories:
+    get:
+      summary: List repositories scoped to an organization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Repositories in the tenant
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+
+  /api/repositories/{id}/rules:
+    put:
+      summary: Replace repository rules (tighten-only merge into policies)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rules]
+              properties:
+                rules:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Rule'
+      responses:
+        '200':
+          description: Saved rules
+
+  /api/github/app:
+    get:
+      summary: GitHub App metadata (slug, permissions, events) via App JWT
+      responses:
+        '200':
+          description: App metadata
+        '503':
+          description: GitHub App credentials not configured
+
+  /api/github/app/installations/{id}/token:
+    post:
+      summary: Mint/rotate an installation token (never echoes the token)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Token created (value withheld)
+        '403':
+          description: Org-scoped keys cannot mint installation tokens
+
+  /api/metrics:
+    get:
+      summary: Prometheus text-format metrics (HTTP, runs, webhooks, queue)
+      responses:
+        '200':
+          description: Metrics payload
+          content:
+            text/plain:
+              schema: { type: string }
 
   /api/github/webhook:
     post:

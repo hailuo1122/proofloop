@@ -1,6 +1,6 @@
 import { NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { api, type Org, type Repo, type Run } from './api';
+import { api, clearApiToken, getApiToken, setApiToken, type Org, type Repo, type Run } from './api';
 import { OverviewPage } from './pages/OverviewPage';
 import { EvidencePage } from './pages/EvidencePage';
 import { UnknownsPage } from './pages/UnknownsPage';
@@ -18,6 +18,8 @@ const nav = [
   ['rules', 'Rules'],
 ] as const;
 
+const ACTIVE_RUN_STATUSES = ['queued', 'analyzing', 'verifying'];
+
 export default function App() {
   const navigate = useNavigate();
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -29,6 +31,16 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [orgName, setOrgName] = useState('');
+  const [token, setToken] = useState('');
+  const [showTokenPanel, setShowTokenPanel] = useState(false);
+  const [showRegister, setShowRegister] = useState(false);
+  const [newRepo, setNewRepo] = useState({
+    provider: 'local',
+    owner: '',
+    name: '',
+    defaultBranch: 'main',
+    localPath: '',
+  });
 
   useEffect(() => {
     api
@@ -128,12 +140,78 @@ export default function App() {
     }
   }
 
+  async function registerRepo() {
+    const name = newRepo.name.trim();
+    const owner = newRepo.owner.trim();
+    if (!name || !owner) {
+      setError('Repository owner and name are required.');
+      return;
+    }
+    if (newRepo.provider === 'local' && !newRepo.localPath.trim()) {
+      setError('A local path is required for local repositories.');
+      return;
+    }
+    setError(null);
+    try {
+      const { data } = await api.createRepository({
+        provider: newRepo.provider,
+        owner,
+        name,
+        defaultBranch: newRepo.defaultBranch.trim() || 'main',
+        ...(newRepo.provider === 'local' ? { localPath: newRepo.localPath.trim() } : {}),
+        organizationId: orgId || undefined,
+      });
+      setRepos((prev) => [data, ...prev.filter((r) => r.id !== data.id)]);
+      setRepoId(data.id);
+      setShowRegister(false);
+      setNewRepo({ provider: 'local', owner: '', name: '', defaultBranch: 'main', localPath: '' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function saveToken() {
+    const value = token.trim();
+    if (!value) return;
+    setApiToken(value);
+    setToken('');
+    setShowTokenPanel(false);
+    // Re-bootstrap the whole view with the authenticated client.
+    setLoading(true);
+    api
+      .organizations()
+      .then((r) => {
+        setOrgs(r.data);
+        setOrgId((prev) => prev || r.data[0]?.id || '');
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }
+
+  function dropToken() {
+    clearApiToken();
+    setShowTokenPanel(false);
+  }
+
+  async function cancelActiveRun() {
+    if (!runId) return;
+    setError(null);
+    try {
+      await api.cancelRun(runId);
+      window.dispatchEvent(new CustomEvent('proofloop:run-updated', { detail: { runId } }));
+      api
+        .runs(repoId)
+        .then((r) => setRuns(r.data))
+        .catch(() => undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function runCheck() {
     if (!repoId) return;
     setLoading(true);
     setError(null);
-    let cancelled = false;
-    const cancel = () => { cancelled = true; };
     try {
       const res = await api.createRun(repoId, {
         noLlm: true,
@@ -141,15 +219,13 @@ export default function App() {
         head: 'HEAD',
         sync: false,
       });
-      if (cancelled) return;
       setRuns((prev) => [res.data, ...prev.filter((r) => r.id !== res.data.id)]);
       setRunId(res.data.id);
       navigate(`/runs/${res.data.id}`);
       let current = res.data;
       for (let i = 0; i < 180; i++) {
-        if (cancelled || ['completed', 'failed', 'cancelled'].includes(current.status)) break;
+        if (['completed', 'failed', 'cancelled'].includes(current.status)) break;
         await new Promise((r) => setTimeout(r, 500));
-        if (cancelled) return;
         current = (await api.run(current.id)).data;
         setRuns((prev) => [current, ...prev.filter((r) => r.id !== current.id)]);
       }
@@ -157,11 +233,15 @@ export default function App() {
         new CustomEvent('proofloop:run-updated', { detail: { runId: current.id } }),
       );
     } catch (e) {
-      if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (!cancelled) setLoading(false);
+      setLoading(false);
     }
   }
+
+  const activeRun = runs.find((r) => r.id === runId);
+  const canCancel = Boolean(activeRun && ACTIVE_RUN_STATUSES.includes(activeRun.status));
+  const hasStoredToken = Boolean(getApiToken());
 
   return (
     <div className="min-h-full">
@@ -235,6 +315,22 @@ export default function App() {
             >
               Run check
             </button>
+            {canCancel ? (
+              <button
+                className="rounded border border-[var(--pl-blocked)] px-3 py-1.5 text-sm text-[var(--pl-blocked)]"
+                onClick={() => void cancelActiveRun()}
+                title="Cancel the in-flight run"
+              >
+                Cancel run
+              </button>
+            ) : null}
+            <button
+              className="rounded border border-[var(--pl-border)] bg-white px-3 py-1.5 text-sm"
+              onClick={() => setShowRegister((v) => !v)}
+              disabled={loading}
+            >
+              Register repository
+            </button>
             <button
               className="rounded border border-[var(--pl-border)] bg-white px-3 py-1.5 text-sm"
               onClick={() => void seedDemo()}
@@ -242,8 +338,107 @@ export default function App() {
             >
               Run demo
             </button>
+            <button
+              className={`rounded border px-3 py-1.5 text-sm ${
+                hasStoredToken
+                  ? 'border-[#0f7b4c] text-[#0f7b4c]'
+                  : 'border-[var(--pl-border)] text-[var(--pl-muted)]'
+              } bg-white`}
+              onClick={() => setShowTokenPanel((v) => !v)}
+              title="API token — required when the server enforces auth"
+            >
+              {hasStoredToken ? 'Token ✓' : 'Set token'}
+            </button>
           </div>
         </div>
+        {showTokenPanel ? (
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 px-4 pb-2">
+            <input
+              className="w-72 rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+              placeholder="PROOFLOOP_API_TOKEN"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveToken();
+              }}
+              type="password"
+            />
+            <button
+              className="rounded bg-[#1a2332] px-3 py-1 text-sm text-white"
+              onClick={() => void saveToken()}
+            >
+              Save token
+            </button>
+            <button
+              className="rounded border border-[var(--pl-border)] bg-white px-3 py-1 text-sm"
+              onClick={dropToken}
+            >
+              Clear
+            </button>
+            <span className="text-xs text-[var(--pl-muted)]">
+              Sent as Bearer auth; stored in this browser only.
+            </span>
+          </div>
+        ) : null}
+        {showRegister ? (
+          <div className="mx-auto flex max-w-6xl flex-wrap items-end gap-2 border-t border-[var(--pl-border)] px-4 py-2">
+            <label className="text-xs text-[var(--pl-muted)]">
+              Provider
+              <select
+                className="mt-1 block rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+                value={newRepo.provider}
+                onChange={(e) => setNewRepo((v) => ({ ...v, provider: e.target.value }))}
+              >
+                <option value="local">local</option>
+                <option value="github">github</option>
+                <option value="gitlab">gitlab</option>
+              </select>
+            </label>
+            <label className="text-xs text-[var(--pl-muted)]">
+              Owner
+              <input
+                className="mt-1 block w-28 rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+                value={newRepo.owner}
+                onChange={(e) => setNewRepo((v) => ({ ...v, owner: e.target.value }))}
+              />
+            </label>
+            <label className="text-xs text-[var(--pl-muted)]">
+              Name
+              <input
+                className="mt-1 block w-32 rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+                value={newRepo.name}
+                onChange={(e) => setNewRepo((v) => ({ ...v, name: e.target.value }))}
+              />
+            </label>
+            {newRepo.provider === 'local' ? (
+              <label className="text-xs text-[var(--pl-muted)]">
+                Local path (server-side)
+                <input
+                  className="mt-1 block w-72 rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+                  placeholder="/repos/my-project"
+                  value={newRepo.localPath}
+                  onChange={(e) => setNewRepo((v) => ({ ...v, localPath: e.target.value }))}
+                />
+              </label>
+            ) : (
+              <label className="text-xs text-[var(--pl-muted)]">
+                Default branch
+                <input
+                  className="mt-1 block w-24 rounded border border-[var(--pl-border)] bg-white px-2 py-1 text-sm"
+                  value={newRepo.defaultBranch}
+                  onChange={(e) => setNewRepo((v) => ({ ...v, defaultBranch: e.target.value }))}
+                />
+              </label>
+            )}
+            <button
+              className="rounded bg-[#1a2332] px-3 py-1.5 text-sm text-white"
+              onClick={() => void registerRepo()}
+              disabled={loading}
+            >
+              Create
+            </button>
+          </div>
+        ) : null}
         <nav className="mx-auto flex max-w-6xl gap-4 px-4 pb-2 text-sm">
           {nav.map(([path, label]) => (
             <NavLink
@@ -263,7 +458,10 @@ export default function App() {
         {error ? <StatePanel state="error" message={error} /> : null}
         {loading && !runId ? <StatePanel state="loading" /> : null}
         {!loading && !repoId ? (
-          <StatePanel state="empty" message="Register a repository or the demo fixture to begin." />
+          <StatePanel
+            state="empty"
+            message="Register a repository with “Register repository” above, or load the demo fixture."
+          />
         ) : null}
         <Routes>
           <Route path="/" element={<StatePanel state="empty" message="Select a run from the header." />} />

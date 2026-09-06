@@ -175,7 +175,8 @@ export async function analyzePythonFilesViaAst(
 
 /**
  * Preferred entry point: real AST when a Python interpreter exists, regex
- * fallback otherwise.
+ * fallback otherwise. The fallback is weaker — surface it instead of failing
+ * silently, or operators cannot tell AST-accurate results from regex guesses.
  */
 export async function analyzePythonFilesAsync(
   root: string,
@@ -184,8 +185,15 @@ export async function analyzePythonFilesAsync(
   try {
     const viaAst = await analyzePythonFilesViaAst(root, files);
     if (viaAst) return viaAst;
-  } catch {
-    // fall through to regex
+    if (files.length > 0 && (await findPython()) === null) {
+      console.warn(
+        '[proofloop] No Python interpreter found — falling back to regex-based Python import analysis (less accurate).',
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[proofloop] Python AST bridge failed (${err instanceof Error ? err.message : String(err)}); falling back to regex-based import analysis.`,
+    );
   }
   return analyzePythonFiles(root, files);
 }

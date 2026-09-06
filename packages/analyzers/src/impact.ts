@@ -1,4 +1,10 @@
-import { createId, type ImpactEdge, type ImpactNode, type RiskLevel } from '@proofloop/core';
+import {
+  createId,
+  HIGH_RISK_PATH_PATTERNS,
+  type ImpactEdge,
+  type ImpactNode,
+  type RiskLevel,
+} from '@proofloop/core';
 import type { DiffFile } from '@proofloop/git';
 import type { TsFileAnalysis } from './typescript.js';
 import type { PyFileAnalysis } from './python.js';
@@ -14,8 +20,10 @@ export interface ImpactGraphResult {
 }
 
 function riskForPath(path: string): RiskLevel {
-  if (/auth|session|permission|secret|payment|schema|migration/i.test(path)) return 'high';
-  if (/api|upload|deploy|workflow/i.test(path)) return 'medium';
+  // Aligned with the claim-level high-risk path definition so impact-node risk
+  // and claim risk never disagree about the same file.
+  if (HIGH_RISK_PATH_PATTERNS.some((re) => re.test(path))) return 'high';
+  if (/workflow/i.test(path)) return 'medium';
   return 'low';
 }
 

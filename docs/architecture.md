@@ -24,7 +24,7 @@ ProofLoop is an evidence-first verification layer for AI and human code changes.
 1. Collect SHAs + diff + `proofloop.yml`
 2. Understand (detect + analyze + optional LLM)
 3. Plan verifications (allowlist)
-4. Verify (worktree when safe; on Windows default to repo tree — set `PROOFLOOP_USE_WORKTREE=1` to opt in)
+4. Verify (isolated `git worktree` of the head SHA by default on every platform; node_modules of the repo — root and per-workspace-package — are linked in. Falls back to the repo tree only when the worktree or dependency links cannot be created)
 5. Score claims / merge gate
 6. Emit `evidence.json` + `report.md`
 
@@ -39,10 +39,13 @@ ProofLoop is an evidence-first verification layer for AI and human code changes.
 
 ## Policies (`proofloop.yml`)
 
+- `mode`: `advisory` (report missing evidence, allow merge; failed tests still block) or `blocking` (default)
 - `requireDynamicVerificationFor`: claim categories that need unit/integration/security/manual evidence (not lint/typecheck alone)
 - `blockOn`: risk severities that keep merge blocked (`critical` / `high` by default)
 - Policies are embedded in `evidence.json` so human confirm re-evaluates the same gate
 - After API confirm, GitHub Check Run + summary comment are refreshed when token + PR metadata exist
+- Init profiles: `proofloop init --profile adopt|standard|strict`
+- Evidence packs include `nextActions` (confirm / verify / graduate) so runs are actionable
 
 ## Human reviews (SHA-bound)
 

@@ -39,7 +39,7 @@ All responses include `requestId`. Errors:
 - `POST /api/github/webhook`
 - `POST /api/gitlab/webhook` — MR open/update/reopen; commit status + MR note when `GITLAB_TOKEN` is set
 
-Auth: set `PROOFLOOP_API_TOKEN` to require `Authorization: Bearer …` on mutating routes. Production requires webhook secrets (`GITHUB_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET`).
+Auth: set `PROOFLOOP_API_TOKEN` to require `Authorization: Bearer …` on **every** non-public route (GETs included); `PROOFLOOP_API_KEYS` accepts `token:orgId` pairs for tenant-scoped keys. Production (`NODE_ENV=production`) refuses to boot without auth credentials. Webhook signatures are **always** required (`GITHUB_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET`) — the webhook endpoints reject unsigned deliveries with 503 even in development. Validation failures (Zod) return `400 invalid_body`; unknown claim ids on confirm return `404`.
 
 Queue: set `REDIS_URL` to use BullMQ; without it, checks run in-process (in-memory). Health reports `queue: "redis" | "memory"`.
 

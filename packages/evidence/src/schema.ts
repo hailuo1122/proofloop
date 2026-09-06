@@ -49,6 +49,7 @@ export const EvidencePackSchema = z.object({
   limitations: z.array(z.string()),
   policies: z
     .object({
+      mode: z.enum(['advisory', 'blocking']).optional(),
       blockOn: z.array(z.string()).optional(),
       requireDynamicVerificationFor: z.array(z.string()).optional(),
       maxTotalDurationSeconds: z.number().optional(),
@@ -72,12 +73,26 @@ export const EvidencePackSchema = z.object({
       }),
     )
     .optional(),
+  nextActions: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.enum(['confirm', 'verify', 'configure', 'graduate']),
+        title: z.string(),
+        detail: z.string(),
+        command: z.string().optional(),
+        claimId: z.string().optional(),
+      }),
+    )
+    .optional(),
   mergeGate: z
     .object({
       allowMerge: z.boolean(),
       reason: z.string(),
       overallStatus: z.string(),
       blockingFindings: z.array(z.string()),
+      mode: z.enum(['advisory', 'blocking']).optional(),
+      advisoryWouldBlock: z.boolean().optional(),
     })
     .optional(),
 });

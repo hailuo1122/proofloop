@@ -68,4 +68,58 @@ describe('EvidencePack', () => {
     expect(parsed.claims[0].status).toBe('verified');
     expect(renderMarkdownReport(parsed)).toContain('ProofLoop Evidence Report');
   });
+
+  it('advisory mode allows merge and emits graduate next action', () => {
+    const claims: Claim[] = [
+      {
+        id: 'claim_sec',
+        runId: 'run_adv',
+        title: 'auth boundary',
+        description: 'x',
+        category: 'security',
+        source: 'diff_inference',
+        status: 'unknown',
+        confidence: 'medium',
+        riskWeight: 85,
+        relatedFiles: ['src/auth.ts'],
+        relatedSymbols: [],
+      },
+    ];
+    const pack = buildEvidencePack({
+      runId: 'run_adv',
+      repository: 'owner/repo',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      source: 'cli',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      totalDurationMs: 10,
+      intent: {
+        id: 'intent_1',
+        runId: 'run_adv',
+        summary: 'auth change',
+        sourceText: 'auth',
+        confidence: 'low',
+        assumptions: [],
+        generatedAt: new Date().toISOString(),
+      },
+      claims,
+      verifications: [],
+      impactNodes: [],
+      artifacts: [],
+      policies: {
+        mode: 'advisory',
+        blockOn: ['critical', 'high'],
+        requireDynamicVerificationFor: ['security', 'data', 'compatibility'],
+        maxTotalDurationSeconds: 600,
+        allowNetwork: false,
+      },
+    });
+    expect(pack.run.overallStatus).toBe('unknown_high_risk');
+    expect(pack.mergeGate?.allowMerge).toBe(true);
+    expect(pack.mergeGate?.advisoryWouldBlock).toBe(true);
+    expect(pack.nextActions?.some((a) => a.kind === 'confirm')).toBe(true);
+    expect(pack.nextActions?.some((a) => a.kind === 'graduate')).toBe(true);
+    expect(renderMarkdownReport(pack)).toContain('Next actions');
+  });
 });

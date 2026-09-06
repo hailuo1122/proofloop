@@ -367,12 +367,28 @@ export async function registerRoutes(app: FastifyInstance) {
         process.env.PROOFLOOP_WORKSPACE_ROOT ?? resolve(process.cwd(), '.data', 'workspaces'),
       );
       const resolved = resolve(body.localPath);
-      if (!resolved.startsWith(workspaceRoot + '/') && !resolved.startsWith(workspaceRoot + '\\')) {
+      const inside = (base: string) =>
+        resolved.startsWith(base + '/') || resolved.startsWith(base + '\\');
+      if (!inside(workspaceRoot)) {
         throw new ProofloopError(
           'bad_request',
           'localPath must be within PROOFLOOP_WORKSPACE_ROOT',
           400,
         );
+      }
+      // Tenant isolation: org-scoped keys may only use checkouts inside their
+      // own workspace subtree (`{root}/{org-slug}/{repo}`) — otherwise an org
+      // key could register another tenant's checkout and read its evidence.
+      if (scope.organizationId) {
+        const org = getOrganization(scope.organizationId);
+        const orgRoot = org ? resolve(workspaceRoot, org.slug) : null;
+        if (!orgRoot || !inside(orgRoot)) {
+          throw new ProofloopError(
+            'bad_request',
+            `localPath must be within the organization workspace (${org?.slug ?? scope.organizationId}/)`,
+            400,
+          );
+        }
       }
       body.localPath = resolved;
     }
@@ -609,19 +625,30 @@ export async function registerRoutes(app: FastifyInstance) {
       .object({
         decision: z.enum(['accept', 'reject']),
         note: z.string().min(1, 'note is required for audit'),
-        reviewer: z.string().optional(),
+        reviewer: z.string().min(1, 'reviewer is required for audit'),
       })
       .parse(req.body ?? {});
 
     const beforeIds = new Set(listVerifications(id).map((v) => v.id));
-    const { pack, review, idempotent } = confirmClaimOnDisk({
-      cwd: repo.localPath,
-      runId: id,
-      claimId,
-      decision: body.decision,
-      note: body.note,
-      reviewer: body.reviewer,
-    });
+    let confirmed: ReturnType<typeof confirmClaimOnDisk>;
+    try {
+      confirmed = confirmClaimOnDisk({
+        cwd: repo.localPath,
+        runId: id,
+        claimId,
+        decision: body.decision,
+        note: body.note,
+        reviewer: body.reviewer,
+      });
+    } catch (err) {
+      // Unknown claim ids are a client error, not a server fault.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith('claim_not_found:')) {
+        throw new ProofloopError('not_found', `Claim not found for run ${id}`, 404);
+      }
+      throw err;
+    }
+    const { pack, review, idempotent } = confirmed;
 
     updateRunOverall(id, pack.run.overallStatus, pack.run.riskLevel);
     for (const c of pack.claims) {

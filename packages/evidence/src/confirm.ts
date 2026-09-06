@@ -18,11 +18,12 @@ import {
   type Verification,
 } from '@proofloop/core';
 import { EvidencePackSchema, type EvidencePack } from './schema.js';
-import { buildUnknowns, renderMarkdownReport } from './pack.js';
+import { buildUnknowns, buildNextActions, renderMarkdownReport } from './pack.js';
 
 function policiesFromPack(pack: EvidencePack): PolicySlice | undefined {
   if (!pack.policies) return undefined;
   return {
+    mode: pack.policies.mode ?? 'blocking',
     blockOn: (pack.policies.blockOn as PolicySlice['blockOn']) ?? ['critical', 'high'],
     requireDynamicVerificationFor:
       (pack.policies.requireDynamicVerificationFor as PolicySlice['requireDynamicVerificationFor']) ??
@@ -115,6 +116,14 @@ export function confirmClaimInPack(input: {
     headSha,
   });
   const riskLevel = computeRiskLevel(nextClaims, findings, policies);
+  const unknowns = buildUnknowns(nextClaims, policies);
+  const nextActions = buildNextActions({
+    runId: input.pack.run.id,
+    claims: nextClaims,
+    unknowns,
+    gate,
+    policies,
+  });
 
   const pack: EvidencePack = {
     ...input.pack,
@@ -138,7 +147,8 @@ export function confirmClaimInPack(input: {
     })),
     verifications: nextVers,
     humanReviews: invalidateStaleManualReviews(reviews, headSha),
-    unknowns: buildUnknowns(nextClaims, policies),
+    unknowns,
+    nextActions,
     mergeGate: gate,
     limitations: [
       ...input.pack.limitations.filter(
@@ -220,6 +230,14 @@ export function rescorePackAtHead(pack: EvidencePack, headSha: string): Evidence
     policies,
     headSha,
   });
+  const unknowns = buildUnknowns(nextClaims, policies);
+  const nextActions = buildNextActions({
+    runId: pack.run.id,
+    claims: nextClaims,
+    unknowns,
+    gate,
+    policies,
+  });
   return EvidencePackSchema.parse({
     ...pack,
     run: {
@@ -245,7 +263,8 @@ export function rescorePackAtHead(pack: EvidencePack, headSha: string): Evidence
       (pack.humanReviews ?? []) as HumanReviewRecord[],
       headSha,
     ),
-    unknowns: buildUnknowns(nextClaims, policies),
+    unknowns,
+    nextActions,
     mergeGate: gate,
   });
 }

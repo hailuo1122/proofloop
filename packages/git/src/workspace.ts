@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, lstatSync, statSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { git } from './exec.js';
+import { git, GIT_NETWORK_TIMEOUT_MS } from './exec.js';
 import { checkoutLockPath, pathLockForDir, withPathLock } from './lock.js';
 
 export interface EnsureCheckoutInput {
@@ -59,12 +59,16 @@ export async function syncRepoToSha(
   headSha: string,
   baseSha?: string,
 ): Promise<void> {
-  await withPathLock(pathLockForDir(dir), async () => {
-    const refs = [headSha];
-    if (baseSha) refs.push(baseSha);
-    await git(dir, ['fetch', '--depth=50', 'origin', ...refs]).catch(async () => {
-      await git(dir, ['fetch', 'origin', headSha]).catch(() => undefined);
-    });
+    await withPathLock(pathLockForDir(dir), async () => {
+      const refs = [headSha];
+      if (baseSha) refs.push(baseSha);
+      await git(dir, ['fetch', '--depth=50', 'origin', ...refs], {
+        timeoutMs: GIT_NETWORK_TIMEOUT_MS,
+      }).catch(async () => {
+        await git(dir, ['fetch', 'origin', headSha], {
+          timeoutMs: GIT_NETWORK_TIMEOUT_MS,
+        }).catch(() => undefined);
+      });
     await git(dir, ['cat-file', '-e', `${headSha}^{commit}`]).catch(() => {
       throw new Error(
         `sha_not_available:${headSha} — fetch succeeded but the commit object is not available. ` +
@@ -90,13 +94,17 @@ export async function ensureGithubCheckout(input: EnsureCheckoutInput): Promise<
 
     if (!existsSync(join(dir, '.git'))) {
       mkdirSync(dir, { recursive: true });
-      await git(root, [
-        'clone',
-        '--filter=blob:none',
-        '--no-checkout',
-        url,
-        join(input.owner, input.name),
-      ]);
+      await git(
+        root,
+        [
+          'clone',
+          '--filter=blob:none',
+          '--no-checkout',
+          url,
+          join(input.owner, input.name),
+        ],
+        { timeoutMs: GIT_NETWORK_TIMEOUT_MS },
+      );
     } else if (input.token) {
       await git(dir, ['remote', 'set-url', 'origin', url]).catch(() => undefined);
     }
@@ -104,8 +112,12 @@ export async function ensureGithubCheckout(input: EnsureCheckoutInput): Promise<
     // Already under workspace lock — call unlocked fetch/checkout.
     const refs = [input.headSha];
     if (input.baseSha) refs.push(input.baseSha);
-    await git(dir, ['fetch', '--depth=50', 'origin', ...refs]).catch(async () => {
-      await git(dir, ['fetch', 'origin', input.headSha]).catch(() => undefined);
+    await git(dir, ['fetch', '--depth=50', 'origin', ...refs], {
+      timeoutMs: GIT_NETWORK_TIMEOUT_MS,
+    }).catch(async () => {
+      await git(dir, ['fetch', 'origin', input.headSha], {
+        timeoutMs: GIT_NETWORK_TIMEOUT_MS,
+      }).catch(() => undefined);
     });
     await git(dir, ['cat-file', '-e', `${input.headSha}^{commit}`]);
     await git(dir, ['checkout', '--force', input.headSha]);

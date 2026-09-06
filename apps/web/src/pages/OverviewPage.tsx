@@ -16,6 +16,8 @@ export function OverviewPage() {
   useEffect(() => {
     if (!runId || runId === '_') return;
     let cancelled = false;
+    let timer: number | undefined;
+    const inflight = (s: string) => ['queued', 'analyzing', 'verifying'].includes(s);
     function load(showSpinner: boolean) {
       if (showSpinner) setLoading(true);
       api
@@ -23,7 +25,7 @@ export function OverviewPage() {
         .then(async (r) => {
           if (cancelled) return;
           setRun(r.data);
-          const inflight = ['queued', 'analyzing', 'verifying'].includes(r.data.status);
+          const active = inflight(r.data.status);
           try {
             const e = await api.evidence(runId!);
             if (!cancelled) {
@@ -33,7 +35,7 @@ export function OverviewPage() {
           } catch (err) {
             if (!cancelled) {
               setPack(null);
-              if (!inflight) {
+              if (!active) {
                 setError(
                   r.data.errorCode
                     ? `Run ${r.data.status}: ${r.data.errorCode}`
@@ -45,6 +47,11 @@ export function OverviewPage() {
                 setError(null);
               }
             }
+          }
+          // Poll only while the run is in flight — completed runs are static,
+          // so hammering the API forever is wasted traffic.
+          if (!cancelled && active) {
+            timer = window.setTimeout(() => load(false), 2500);
           }
         })
         .catch((err) => {
@@ -60,13 +67,10 @@ export function OverviewPage() {
       if (!detail?.runId || detail.runId === runId) load(false);
     };
     window.addEventListener('proofloop:run-updated', onUpdate);
-    const poll = window.setInterval(() => {
-      load(false);
-    }, 2500);
     return () => {
       cancelled = true;
+      if (timer) window.clearTimeout(timer);
       window.removeEventListener('proofloop:run-updated', onUpdate);
-      window.clearInterval(poll);
     };
   }, [runId]);
 

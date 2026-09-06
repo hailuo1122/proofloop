@@ -48,8 +48,18 @@ export async function checkCommand(opts: {
     process.stderr.write(`Evidence: ${evidencePath}\n`);
     process.stderr.write(`Report:   ${reportPath}\n`);
     process.stderr.write(
-      `Overall:  ${pack.run.overallStatus} | merge=${pack.mergeGate?.allowMerge ? 'yes' : 'no'}\n`,
+      `Overall:  ${pack.run.overallStatus} | merge=${pack.mergeGate?.allowMerge ? 'yes' : 'no'}${
+        pack.mergeGate?.mode ? ` | mode=${pack.mergeGate.mode}` : ''
+      }${pack.mergeGate?.advisoryWouldBlock ? ' (would block if blocking)' : ''}\n`,
     );
+    const next = pack.nextActions ?? [];
+    if (next.length) {
+      process.stderr.write('Next:\n');
+      for (const a of next.slice(0, 5)) {
+        process.stderr.write(`  - [${a.kind}] ${a.title}\n`);
+        if (a.command) process.stderr.write(`      ${a.command}\n`);
+      }
+    }
 
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(pack, null, 2)}\n`);
@@ -63,8 +73,15 @@ export async function checkCommand(opts: {
 
     const failOn = opts.failOn ?? 'blocked';
     const status = pack.run.overallStatus;
+    const mode = pack.mergeGate?.mode ?? pack.policies?.mode ?? 'blocking';
+
+    // Hard failures always fail the process (even in advisory).
     if (status === 'critical_blocked' || status === 'high_blocked' || status === 'failed') {
       return 1;
+    }
+    // Advisory: missing evidence is reported but does not fail the CLI.
+    if (mode === 'advisory') {
+      return 0;
     }
     if (failOn === 'unknown-high' && status === 'unknown_high_risk') return 1;
     if (failOn === 'blocked' && status === 'unknown_high_risk') return 1;

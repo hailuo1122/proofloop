@@ -114,8 +114,16 @@ async function withSchemaRetry<T>(
   try {
     return parse(await invoke());
   } catch (first) {
+    let secondRaw: unknown;
     try {
-      return parse(await invoke());
+      secondRaw = await invoke();
+    } catch (retryErr) {
+      // A transport/HTTP failure on retry is not a schema problem — surface it
+      // as-is so operators don't chase phantom validation issues.
+      throw retryErr;
+    }
+    try {
+      return parse(secondRaw);
     } catch {
       const err = new Error('llm_schema_error');
       (err as Error & { cause?: unknown }).cause = first;

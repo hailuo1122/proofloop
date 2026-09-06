@@ -161,6 +161,12 @@ describe('overallStatus and merge gate', () => {
     expect(mapOverallToCheckConclusion('unknown_high_risk')).toBe('action_required');
     expect(mapOverallToCheckConclusion('failed')).toBe('failure');
     expect(mapOverallToCheckConclusion('critical_blocked')).toBe('failure');
+    expect(
+      mapOverallToCheckConclusion('unknown_high_risk', {
+        allowMerge: true,
+        mode: 'advisory',
+      }),
+    ).toBe('success');
   });
 
   it('critical blocked findings take priority', () => {

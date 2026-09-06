@@ -44,10 +44,9 @@ export function resolveClaimStatus(input: {
   );
 
   if (executed.length === 0) {
-    if (fromLlmOnly || claim.source === 'diff_inference') {
-      return fromLlmOnly ? 'inferred' : 'unknown';
-    }
-    return 'unknown';
+    // LLM-only claims are inferences, never facts — no execution can ever make
+    // one `verified`. Claims without any evidence are simply unknown.
+    return fromLlmOnly ? 'inferred' : 'unknown';
   }
 
   // A failed verification is hard evidence against the claim. A timed_out run
@@ -199,6 +198,7 @@ export function evaluateMergeGate(input: {
   policies?: PolicySlice;
   headSha?: string;
 }): MergeGate {
+  const mode = input.policies?.mode ?? 'blocking';
   const overallStatus = computeOverallStatus(input);
   const riskLevel = computeRiskLevel(input.claims, input.findings, input.policies);
   const blockingFindings = input.findings.filter((f) => f.blocking).map((f) => f.title);
@@ -214,7 +214,10 @@ export function evaluateMergeGate(input: {
     allowMerge = false;
   } else if (overallStatus === 'critical_blocked') {
     allowMerge = !riskBlockedByPolicy('critical', input.policies);
-  } else if (overallStatus === 'high_blocked' || overallStatus === 'unknown_high_risk') {
+  } else if (overallStatus === 'high_blocked') {
+    // Failed high-risk verification / blocked claim — still hard-blocks in advisory.
+    allowMerge = !riskBlockedByPolicy('high', input.policies);
+  } else if (overallStatus === 'unknown_high_risk') {
     allowMerge = !riskBlockedByPolicy('high', input.policies);
   } else if (allowMerge && overallStatus === 'passed_with_warnings') {
     // Optional: block warnings when policy blockOn includes current risk level
@@ -222,6 +225,17 @@ export function evaluateMergeGate(input: {
       allowMerge = false;
     }
   }
+
+  // Advisory mode: missing evidence is reported but does not block merge.
+  // Executed failures (failed / high_blocked / critical_blocked) still block.
+  if (mode === 'advisory' && !allowMerge) {
+    if (overallStatus === 'unknown_high_risk' || overallStatus === 'passed_with_warnings') {
+      allowMerge = true;
+    }
+  }
+
+  const advisoryWouldBlock =
+    mode === 'advisory' && allowMerge && !evaluateMergeGateBlockingOnly(input).allowMerge;
 
   let reason: string;
   switch (overallStatus) {
@@ -239,17 +253,25 @@ export function evaluateMergeGate(input: {
       reason = 'One or more verifications failed';
       break;
     case 'unknown_high_risk':
-      reason = allowMerge
-        ? `High-risk unknowns remain but policies.blockOn excludes high (${highUnknown
-            .map((c) => c.title)
-            .join('; ')})`
-        : `needs-human-review: high-risk claims lack dynamic evidence (${highUnknown
-            .map((c) => c.title)
-            .join('; ')})`;
+      if (mode === 'advisory' && allowMerge) {
+        reason = `advisory mode: high-risk unknowns reported but merge allowed (${highUnknown
+          .map((c) => c.title)
+          .join('; ')}). Set policies.mode: blocking to enforce.`;
+      } else {
+        reason = allowMerge
+          ? `High-risk unknowns remain but policies.blockOn excludes high (${highUnknown
+              .map((c) => c.title)
+              .join('; ')})`
+          : `needs-human-review: high-risk claims lack dynamic evidence (${highUnknown
+              .map((c) => c.title)
+              .join('; ')})`;
+      }
       break;
     case 'passed_with_warnings':
       reason = allowMerge
-        ? 'Low-risk unknowns or warnings remain; merge allowed with caution'
+        ? mode === 'advisory' && advisoryWouldBlock
+          ? `advisory mode: warnings would block under blocking mode; merge allowed with caution`
+          : 'Low-risk unknowns or warnings remain; merge allowed with caution'
         : `Policy blockOn includes ${riskLevel}; unresolved warnings block merge`;
       break;
     default:
@@ -261,12 +283,51 @@ export function evaluateMergeGate(input: {
     reason,
     overallStatus,
     blockingFindings: [...new Set([...blockingFindings, ...highUnknown.map((c) => c.title)])],
+    mode,
+    advisoryWouldBlock,
   };
+}
+
+/** Evaluate gate as if mode were blocking (used to compute advisoryWouldBlock). */
+function evaluateMergeGateBlockingOnly(input: {
+  claims: Claim[];
+  verifications: Verification[];
+  findings: RiskFinding[];
+  policies?: PolicySlice;
+  headSha?: string;
+}): { allowMerge: boolean } {
+  const policies: PolicySlice | undefined = input.policies
+    ? { ...input.policies, mode: 'blocking' }
+    : undefined;
+  const overallStatus = computeOverallStatus({ ...input, policies });
+  const riskLevel = computeRiskLevel(input.claims, input.findings, policies);
+
+  let allowMerge = overallStatus === 'passed' || overallStatus === 'passed_with_warnings';
+  if (overallStatus === 'failed') {
+    allowMerge = false;
+  } else if (overallStatus === 'critical_blocked') {
+    allowMerge = !riskBlockedByPolicy('critical', policies);
+  } else if (overallStatus === 'high_blocked' || overallStatus === 'unknown_high_risk') {
+    allowMerge = !riskBlockedByPolicy('high', policies);
+  } else if (allowMerge && overallStatus === 'passed_with_warnings') {
+    if (riskBlockedByPolicy(riskLevel, policies) && riskLevel !== 'low') {
+      allowMerge = false;
+    }
+  }
+  return { allowMerge };
 }
 
 export function mapOverallToCheckConclusion(
   status: OverallStatus,
+  opts?: { allowMerge?: boolean; mode?: 'advisory' | 'blocking' },
 ): 'success' | 'failure' | 'neutral' | 'action_required' {
+  // When merge is allowed (e.g. advisory unknowns), required GitHub checks need success.
+  if (opts?.allowMerge && (status === 'unknown_high_risk' || status === 'passed_with_warnings')) {
+    return opts.mode === 'advisory' ? 'success' : 'neutral';
+  }
+  if (opts?.allowMerge && status === 'passed') {
+    return 'success';
+  }
   switch (status) {
     case 'passed':
       return 'success';

@@ -7,12 +7,14 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-/** Allow the UI to set the token from a login dialog. */
+/** Allow the UI to set the token from a login dialog. Persists to localStorage
+ *  so the token survives page reloads; clearApiToken removes both. */
 export function setApiToken(token: string) {
   try {
     sessionStorage.setItem('PROOFLOOP_API_TOKEN', token);
+    localStorage.setItem('PROOFLOOP_API_TOKEN', token);
   } catch {
-    // sessionStorage may not be available (SSR, privacy mode)
+    // storage may not be available (SSR, privacy mode)
   }
 }
 

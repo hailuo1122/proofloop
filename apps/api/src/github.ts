@@ -11,12 +11,14 @@ import {
   getRepository,
   getRun,
   listRepositories,
+  releaseHeadClaim,
   upsertGithubInstallation,
   updateRepositoryLocalPath,
   updateRunGithubMeta,
 } from './store.js';
 import { createGithubOctokit, withGithubRetry } from './github-auth.js';
 import { enqueueRepositoryCheck } from './queue.js';
+import { webhooksTotal } from './metrics.js';
 
 function verifySignature(secret: string, payload: string, signature: string | undefined): boolean {
   if (!signature) return false;
@@ -29,17 +31,144 @@ function verifySignature(secret: string, payload: string, signature: string | un
 }
 
 export function summaryMarkdown(pack: EvidencePack, evidenceUrl: string): string {
-  return [
+  const lines = [
     `### ProofLoop`,
     ``,
     `- Overall: \`${pack.run.overallStatus}\``,
     `- Risk: \`${pack.run.riskLevel}\``,
     `- Merge: ${pack.mergeGate?.allowMerge ? 'allowed' : 'blocked'}`,
+    `- Mode: \`${pack.mergeGate?.mode ?? pack.policies?.mode ?? 'blocking'}\``,
     `- Claims: ${pack.claims.length}, Unknowns: ${pack.unknowns.length}`,
     `- Evidence: ${evidenceUrl}`,
     ``,
     pack.mergeGate?.reason ?? '',
+  ];
+  const next = pack.nextActions ?? [];
+  if (next.length) {
+    lines.push('', '**Next actions**');
+    for (const a of next.slice(0, 5)) {
+      lines.push(`- ${a.title}${a.command ? `: \`${a.command}\`` : ''}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Create an in-progress Check Run so the PR is not silent while the job runs. */
+export async function startGithubCheckRun(input: {
+  owner: string;
+  repo: string;
+  headSha: string;
+  installationId?: number | null;
+}): Promise<number | null> {
+  const auth = await createGithubOctokit(input.installationId);
+  if (!auth) return null;
+  try {
+    const check = await withGithubRetry(() =>
+      auth.octokit.checks.create({
+        owner: input.owner,
+        repo: input.repo,
+        name: 'ProofLoop',
+        head_sha: input.headSha,
+        status: 'in_progress',
+        output: {
+          title: 'ProofLoop: running',
+          summary: 'Verification pipeline in progress — evidence will be published when it finishes.',
+        },
+      }),
+    );
+    return check.data.id;
+  } catch {
+    return null; // best-effort; the completion publish creates its own run
+  }
+}
+
+/** Report a crashed pipeline as a failed Check Run — a failed run must never be silent. */
+export async function publishGithubFailure(input: {
+  owner: string;
+  repo: string;
+  headSha: string;
+  runId: string;
+  checkRunId?: number | null;
+  prNumber?: number | null;
+  installationId?: number | null;
+  message: string;
+}): Promise<void> {
+  const auth = await createGithubOctokit(input.installationId);
+  if (!auth) return;
+  const publicBase = process.env.PUBLIC_BASE_URL ?? 'http://localhost:8787';
+  const evidenceUrl = `${publicBase}/api/runs/${input.runId}/evidence-pack`;
+  const body = [
+    `### ProofLoop`,
+    ``,
+    `- Overall: \`error\``,
+    `- The verification pipeline failed before producing evidence.`,
+    `- \`${input.message.slice(0, 300)}\``,
+    `- Evidence: ${evidenceUrl}`,
   ].join('\n');
+  try {
+    if (input.checkRunId) {
+      const id = input.checkRunId;
+      await withGithubRetry(() =>
+        auth.octokit.checks.update({
+          owner: input.owner,
+          repo: input.repo,
+          check_run_id: id,
+          status: 'completed',
+          conclusion: 'failure',
+          output: { title: 'ProofLoop: error', summary: body },
+        }),
+      );
+    } else {
+      await withGithubRetry(() =>
+        auth.octokit.checks.create({
+          owner: input.owner,
+          repo: input.repo,
+          name: 'ProofLoop',
+          head_sha: input.headSha,
+          status: 'completed',
+          conclusion: 'failure',
+          output: { title: 'ProofLoop: error', summary: body },
+        }),
+      );
+    }
+  } catch {
+    // best-effort
+  }
+  if (input.prNumber) {
+    const marker = '<!-- proofloop-summary -->';
+    const commentBody = `${marker}\n${body}`;
+    try {
+      const comments = await withGithubRetry(() =>
+        auth.octokit.issues.listComments({
+          owner: input.owner,
+          repo: input.repo,
+          issue_number: input.prNumber!,
+        }),
+      );
+      const existing = comments.data.find((c) => c.body?.includes(marker));
+      if (existing) {
+        await withGithubRetry(() =>
+          auth.octokit.issues.updateComment({
+            owner: input.owner,
+            repo: input.repo,
+            comment_id: existing.id,
+            body: commentBody,
+          }),
+        );
+      } else {
+        await withGithubRetry(() =>
+          auth.octokit.issues.createComment({
+            owner: input.owner,
+            repo: input.repo,
+            issue_number: input.prNumber!,
+            body: commentBody,
+          }),
+        );
+      }
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 export async function publishGithubStatus(input: {
@@ -61,6 +190,10 @@ export async function publishGithubStatus(input: {
   const evidenceUrl = `${publicBase}/api/runs/${input.runId}/evidence-pack`;
   const conclusion = mapOverallToCheckConclusion(
     input.pack.run.overallStatus as Parameters<typeof mapOverallToCheckConclusion>[0],
+    {
+      allowMerge: input.pack.mergeGate?.allowMerge,
+      mode: input.pack.mergeGate?.mode ?? input.pack.policies?.mode,
+    },
   );
   const body = summaryMarkdown(input.pack, evidenceUrl);
 
@@ -269,6 +402,8 @@ export async function handleGithubWebhook(input: {
     };
   }
 
+  webhooksTotal.inc({ provider: 'github', event });
+
   if (event === 'installation') {
     const payload = input.body as {
       action?: string;
@@ -401,14 +536,27 @@ export async function handleGithubWebhook(input: {
         },
       };
     }
-    // Idempotency: a duplicate check_suite event for the same head must not
-    // enqueue a second run while the first is still in flight.
-    const active = findClaimedRunForHead(repo.id, headSha) ?? findActiveRunForHead(repo.id, headSha);
-    if (active) {
-      return {
-        status: 200,
-        body: { idempotent: true, runId: active.id, status: active.status },
-      };
+    // Idempotency: a duplicate check_suite `requested` for the same head must
+    // not enqueue a second run while the first is still in flight. A
+    // `rerequested` is an explicit re-run from the GitHub UI — bypass the
+    // completed-head claim (released below) but never pile onto a live run.
+    const activeInFlight = findActiveRunForHead(repo.id, headSha);
+    if (action === 'rerequested') {
+      if (activeInFlight) {
+        return {
+          status: 200,
+          body: { idempotent: true, runId: activeInFlight.id, status: activeInFlight.status },
+        };
+      }
+      releaseHeadClaim(repo.id, headSha);
+    } else {
+      const active = findClaimedRunForHead(repo.id, headSha) ?? activeInFlight;
+      if (active) {
+        return {
+          status: 200,
+          body: { idempotent: true, runId: active.id, status: active.status },
+        };
+      }
     }
     const run = await enqueueRepositoryCheck({
       repositoryId: repo.id,
@@ -563,7 +711,6 @@ export async function handleGithubWebhook(input: {
       runId: run.id,
       status: run.status,
       overallStatus: run.overallStatus ?? undefined,
-      workspace: localPath,
       evidenceUrl: `${process.env.PUBLIC_BASE_URL ?? 'http://localhost:8787'}/api/runs/${run.id}/evidence-pack`,
     },
   };

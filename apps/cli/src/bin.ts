@@ -16,6 +16,11 @@ program
   .command('init')
   .description('Detect project and write proofloop.yml draft')
   .option('--force', 'Overwrite existing proofloop.yml', false)
+  .option(
+    '--profile <name>',
+    'adopt (advisory) | standard (blocking) | strict',
+    'standard',
+  )
   .option('--cwd <path>', 'Working directory', process.cwd())
   .action(async (opts) => {
     const code = await initCommand(opts);

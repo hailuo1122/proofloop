@@ -1,0 +1,30 @@
+project:
+  language: typescript
+  packageManager: pnpm
+commands:
+  lint: pnpm lint
+  typecheck: pnpm typecheck
+  unit: pnpm test
+  build: pnpm build
+policies:
+  mode: blocking
+  blockOn:
+    - critical
+    - high
+  requireDynamicVerificationFor:
+    - security
+    - data
+    - compatibility
+  maxTotalDurationSeconds: 600
+  allowNetwork: false
+context:
+  include:
+    - README.md
+    - docs/**/*.md
+    - .github/**/*.yml
+  exclude:
+    - node_modules/**
+    - dist/**
+    - .env*
+redaction:
+  enabled: true

@@ -1,11 +1,15 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectProject } from '@proofloop/analyzers';
-import { DEFAULT_PROOFLOOP_YML } from '@proofloop/core';
+import { DEFAULT_PROOFLOOP_YML, INIT_PROFILE_POLICIES, type InitProfile } from '@proofloop/core';
 import { evaluateCommand } from '@proofloop/security';
 import YAML from 'yaml';
 
-export async function initCommand(opts: { force?: boolean; cwd: string }): Promise<number> {
+export async function initCommand(opts: {
+  force?: boolean;
+  cwd: string;
+  profile?: string;
+}): Promise<number> {
   try {
     const cwd = opts.cwd;
     const out = join(cwd, 'proofloop.yml');
@@ -13,6 +17,13 @@ export async function initCommand(opts: { force?: boolean; cwd: string }): Promi
       console.error('proofloop.yml already exists (pass --force to overwrite)');
       return 2;
     }
+
+    const profileRaw = (opts.profile ?? 'standard').toLowerCase();
+    if (!['adopt', 'standard', 'strict'].includes(profileRaw)) {
+      console.error(`Unknown profile "${opts.profile}". Use adopt|standard|strict`);
+      return 2;
+    }
+    const profile = profileRaw as InitProfile;
 
     const detection = detectProject(cwd);
     const doc = YAML.parse(DEFAULT_PROOFLOOP_YML) as Record<string, unknown>;
@@ -27,10 +38,16 @@ export async function initCommand(opts: { force?: boolean; cwd: string }): Promi
       build: detection.commands.build,
       security: detection.commands.security,
     };
+    doc.policies = { ...INIT_PROFILE_POLICIES[profile] };
 
     writeFileSync(out, YAML.stringify(doc), 'utf8');
-    console.log(`Wrote ${out}`);
+    console.log(`Wrote ${out} (profile: ${profile})`);
     console.log(`Language: ${detection.language} (confidence: ${detection.confidence})`);
+    if (profile === 'adopt') {
+      console.log(
+        'Adopt profile: advisory mode — reports high-risk unknowns but does not block merge on missing evidence. Failed tests still block.',
+      );
+    }
 
     console.log('\nWill run (allowlisted / declared):');
     for (const [k, cmd] of Object.entries(detection.commands)) {
